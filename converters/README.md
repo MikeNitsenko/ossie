@@ -88,6 +88,7 @@ The Ossie specification currently defines extensions for the following vendors:
 | `NVIDIA_GSF` | NVIDIA Generative Semantic Fabric standalone YAML |
 | `SIGMA` | Sigma Computing data model |
 | `THOUGHTSPOT` | ThoughtSpot TML (Model + Table/SQL View) |
+| `CUBE` | Cube data model |
 
 Each vendor may define custom extensions (via the `custom_extensions` field in the Ossie spec) to carry vendor-specific metadata that does not have an equivalent in the core specification.
 
