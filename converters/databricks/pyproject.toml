@@ -40,6 +40,10 @@ keywords = [
 ]
 dependencies = [
     "PyYAML>=6.0",
+    # Qualify every bare column in a computed joined-table dimension with the
+    # Metric View join path. Regex cannot distinguish columns from SQL functions,
+    # keywords, types, or literal contents safely.
+    "sqlglot>=20.0",
 ]
 
 [project.scripts]

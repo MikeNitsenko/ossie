@@ -46,7 +46,8 @@ pip install apache-ossie-databricks        # once published to PyPI
 pip install -e .
 ```
 
-The only runtime dependency is `PyYAML`. Python 3.11+.
+Runtime dependencies are `PyYAML` and `sqlglot` (used to qualify bare columns in
+computed dimensions from joined datasets). Python 3.11+.
 
 ## Usage
 
@@ -83,7 +84,7 @@ Each row maps in both directions; the **Notes** flag where a behavior is specifi
 | `relationship` `from_columns`/`to_columns` | join `on` (differing names) / `using` (shared names) | Decomposed into columns on import; rebuilt into `on`/`using` on export. |
 | `relationship.from`/`to` direction | join `cardinality` | Export: source on the many (`from`) side -> `many_to_one`; on the one (`to`) side -> `one_to_many`. |
 | `dataset.primary_key` / `unique_keys` | join `rely.at_most_one_match` | Both directions: export sets `at_most_one_match` when a key covers the join columns; import recovers a `unique_keys` from it. |
-| `dataset.fields[]` | `dimensions[]` | Export: fields flatten into one list and a joined column is qualified by its full join path (`customer.c_name`; `customer.region.r_name` when nested). |
+| `dataset.fields[]` | `dimensions[]` | Export: fields flatten into one list and every bare column in a joined field expression is qualified by its full join path (`customer.c_name`; `CONCAT(customer.first_name, customer.last_name)`; `customer.region.r_name` when nested). A complex expression on a fanned-out/diamond join remains ambiguous and is dropped with a warning. |
 | `field.expression.dialects[]` | `expr` | Export: prefer the `DATABRICKS` dialect, else `ANSI_SQL`. |
 | `metrics[]` | `measures[]` | Export: fact columns are referenced bare (`SUM(amount)`). |
 | `field.label` | `display_name` | |

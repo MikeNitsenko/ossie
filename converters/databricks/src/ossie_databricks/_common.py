@@ -26,6 +26,8 @@ import json
 import re
 
 import yaml
+from sqlglot import exp, parse_one
+from sqlglot.errors import ParseError
 
 # Apache Ossie semantic model spec version this converter targets (see core-spec).
 #
@@ -101,6 +103,35 @@ def require_str(obj, key, what):
         raise ConversionError(
             f"{what}: '{key}' must be a string, got {type(value).__name__}")
     return value
+
+
+def qualify_bare_columns(expression, qualifier):
+    """Qualify bare SQL columns with a Databricks Metric View join path.
+
+    A field expression is dataset-scoped in Ossie, so ``price * quantity`` is
+    complete there. Metric View dimensions live in one flat namespace and need
+    ``customer.price * customer.quantity`` for a joined source. SQL parsing keeps
+    function names, types, keywords and quoted literal contents untouched.
+
+    Returns ``None`` when the expression is not parseable as Databricks SQL; the
+    caller can then retain the converter's explicit warning/fallback policy.
+    """
+    try:
+        tree = parse_one(str(expression), read="databricks")
+        if tree is None:
+            return None
+        prefix = [part for part in str(qualifier).split(".") if part]
+        if not prefix:
+            return str(expression)
+        for column in tree.find_all(exp.Column):
+            if column.table:
+                continue
+            replacement = parse_one(
+                ".".join(prefix + [column.name]), read="databricks")
+            column.replace(replacement)
+        return tree.sql(dialect="databricks")
+    except ParseError:
+        return None
 
 
 # YAML 1.1 (PyYAML's default) treats bare on/off/yes/no/y/n as booleans, so a metric

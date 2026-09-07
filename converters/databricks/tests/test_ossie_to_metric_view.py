@@ -623,6 +623,56 @@ def test_nested_join_uses_full_path_qualification():
     assert nation_join["on"] == "customer.nkey = nation.n_key"
 
 
+def test_computed_joined_dimension_qualifies_every_bare_column():
+    """Dataset-scoped Ossie expressions become flat Metric View expressions, so all
+    physical columns -- not just a one-column expression -- need the join path."""
+    import yaml
+    ossie = yaml.safe_dump({"version": exporter.OSSIE_VERSION, "semantic_model": [{
+        "name": "m",
+        "datasets": [
+            {"name": "orders", "source": "c.s.orders"},
+            {"name": "customer", "source": "c.s.customer", "fields": [
+                _cfield("full_name", "CONCAT(first_name, ' ', last_name)"),
+                _cfield("bucket", "CASE WHEN score > 10 THEN 'high' ELSE 'low' END"),
+            ]},
+        ],
+        "relationships": [
+            {"name": "r1", "from": "orders", "to": "customer",
+             "from_columns": ["customer_id"], "to_columns": ["id"]},
+        ],
+    }]})
+
+    out = parse(exporter.convert_ossie_to_metric_view(ossie))
+    exprs = {dimension["name"]: dimension["expr"]
+             for dimension in out["dimensions"]}
+    assert exprs["full_name"] == (
+        "CONCAT(customer.first_name, ' ', customer.last_name)")
+    assert exprs["bucket"] == (
+        "CASE WHEN customer.score > 10 THEN 'high' ELSE 'low' END")
+
+
+def test_unparseable_computed_joined_dimension_keeps_warning_fallback():
+    """An uncommon dialect expression still follows the established non-destructive
+    fallback instead of failing the entire model because sqlglot cannot parse it."""
+    import yaml
+    ossie = yaml.safe_dump({"version": exporter.OSSIE_VERSION, "semantic_model": [{
+        "name": "m",
+        "datasets": [
+            {"name": "orders", "source": "c.s.orders"},
+            {"name": "customer", "source": "c.s.customer",
+             "fields": [_cfield("custom", "value @@ not valid sql")]},
+        ],
+        "relationships": [
+            {"name": "r1", "from": "orders", "to": "customer",
+             "from_columns": ["customer_id"], "to_columns": ["id"]},
+        ],
+    }]})
+
+    with pytest.warns(UserWarning, match="could not be parsed for qualification"):
+        out = parse(exporter.convert_ossie_to_metric_view(ossie))
+    assert out["dimensions"][0]["expr"] == "value @@ not valid sql"
+
+
 def test_case_variant_dataset_name_rejected():
     """DBR identifiers are case-insensitive, so two datasets differing only in case
     (`customer`/`Customer`) collide and are rejected (review finding)."""

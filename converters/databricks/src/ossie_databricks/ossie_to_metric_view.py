@@ -42,6 +42,7 @@ from ._common import (
     load_yaml,
     merge_description,
     pick_expression,
+    qualify_bare_columns,
     read_stash,
     require,
     require_str,
@@ -501,11 +502,12 @@ def _convert_field(field, name, qualifier, is_fact, prefix=None):
         _warn(scope, "no DATABRICKS/ANSI_SQL dialect; dropping field")
         return None
 
-    # Requalify a joined-table column with its full join-name path from the source
-    # (`parent.child.col`); a depth-1 join is just its own name. Only safe for bare
-    # columns. A complex expression on a single join is emitted as-is (likely resolves;
-    # warned). On a fanned-out (diamond) dataset it cannot be attributed to one of the
-    # instances, so it is dropped rather than emitted as an ambiguous dimension.
+    # Requalify joined-table columns with their full join-name path from the source
+    # (`parent.child.col`); a depth-1 join is just its own name. A computed expression
+    # is parsed so every bare column gets the same path without touching functions,
+    # keywords, types, or literals. On a fanned-out (diamond) dataset an already-
+    # qualified reference can still name the dataset rather than this particular join
+    # instance, so that ambiguous case remains refused.
     if not is_fact:
         if is_simple_identifier(expr):
             expr = f"{qualifier}.{expr}"
@@ -514,7 +516,13 @@ def _convert_field(field, name, qualifier, is_fact, prefix=None):
                          "unambiguously qualified; dropped")
             return None
         else:
-            _warn(scope, "complex expression on a joined table; emitted as-is, verify qualification")
+            qualified = qualify_bare_columns(expr, qualifier)
+            if qualified is None:
+                _warn(scope, "complex expression on a joined table could not be "
+                             "parsed for qualification; emitted as-is, verify "
+                             "qualification")
+            else:
+                expr = qualified
 
     # A fanned-out dataset (joined under more than one alias) needs unique dimension
     # names, so prefix with the instance alias (e.g. customer_region's r_name ->

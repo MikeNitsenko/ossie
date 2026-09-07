@@ -108,6 +108,32 @@ for issue in issues:
     print(issue)
 ```
 
+For a publication target, use the view-aware projection API. It emits only the
+members exposed by the selected Cube view, applies view aliases and prefixes, and
+returns the resolved root dataset for a downstream spoke:
+
+```python
+from ossie_cube import convert_cube_view_to_ossie
+
+ossie_yaml, source, issues = convert_cube_view_to_ossie(files, "sales")
+```
+
+This is intentionally different from the lossless import above. Hidden dependency
+measures and computed dimensions are inlined, not exposed as extra public members;
+primary-key columns required for relationship semantics remain dataset metadata.
+Fan-out-unsafe selected metrics are refused by default (set `strict_fanout=False`
+only for a diagnostic preview).
+
+The publication projection currently requires a static YAML, single-root,
+tree-shaped view. It refuses split views, diamond paths, `geo`, `switch`, and
+`sub_query` dimensions, segments, hierarchies, and measures with windowing or
+multi-stage semantics. A selected member with no faithful static representation is
+an error rather than a silent omission. Cube view `includes`, `excludes`, member
+aliases, cube aliases, prefixes, title/description overrides, and AI context are
+honored. Explicit view inclusion is the publication boundary: a source member's
+`public` flag is not copied by Cube when it creates the view member, so an explicitly
+included member is public in the projected view just as it is in Cube itself.
+
 ## Mapping
 
 Each row maps in both directions; the **Notes** flag where a behavior is specific
