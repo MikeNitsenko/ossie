@@ -107,7 +107,7 @@ try:
     if _VALIDATOR.exists():
         _VALIDATOR_MODULE = _load_validator()
         _SCHEMA = json.loads(
-            (_REPO_ROOT / "core-spec" / "osi-schema.json").read_text())
+            (_REPO_ROOT / "core-spec" / "ossie-schema.json").read_text())
 # SystemExit is deliberately included: `validate.py` reports a missing `jsonschema` by
 # calling `sys.exit(1)` at import time, and SystemExit derives from BaseException, so an
 # `except Exception` let it escape and abort pytest *collection* -- the entire suite

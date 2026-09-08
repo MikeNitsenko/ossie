@@ -134,7 +134,7 @@ def require_str(obj, key, what):
 # would corrupt Cube string values (a title "On", a status synonym, a segment
 # name). The Loader below uses YAML 1.2 booleans (only true/false); the Dumper
 # force-quotes bool-like string tokens so the output round-trips through a 1.1
-# reader too. Same approach as the osi-omni and osi-databricks converters.
+# reader too. Same approach as the ossie-omni and ossie-databricks converters.
 class _Yaml12Loader(yaml.SafeLoader):
     """SafeLoader with YAML 1.2 boolean semantics."""
 

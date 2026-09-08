@@ -41,8 +41,8 @@ import os
 import sys
 
 from ._common import ConversionError
-from .cube_to_osi import convert_cube_to_ossie
-from .osi_to_cube import convert_ossie_to_cube
+from .cube_to_ossie import convert_cube_to_ossie
+from .ossie_to_cube import convert_ossie_to_cube
 
 
 def _build_parser():
