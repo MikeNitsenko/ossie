@@ -174,7 +174,7 @@ def convert_cube_to_ossie(files, model_name=None, view=None, strict_fanout=False
     relationships, extra_joins = _convert_joins(cubes, sorted(extra_files), issues)
     if relationships:
         model["relationships"] = relationships
-    fanned_out = _fanned_out_datasets(relationships)
+    fanned_out = _fanned_out_datasets(relationships, extra_joins)
     pk_by_cube = {cname: _primary_key_of(cube, cname)
                   for cname, cube in cubes.items()}
     # Which members regenerate from a bare column name, worked out once per cube:
@@ -542,8 +542,8 @@ def _the_view_is_the_generated_one(model, cubes, views, view_paths, mapped_name,
     return body == predicted
 
 
-def _fanned_out_datasets(relationships):
-    """{dataset: relationship name} for datasets a join can multiply rows of.
+def _fanned_out_datasets(relationships, extra_joins=None):
+    """{dataset: the phrase naming what fans it out} for datasets a join multiplies.
 
     A dataset on the `to` (one) side of a many-to-one join is fanned out by rows from
     the `from` (many) side. A **one-to-one** join multiplies neither side, so it is
@@ -553,13 +553,37 @@ def _fanned_out_datasets(relationships):
 
     A hand-authored Ossie relationship carries no Cube cardinality, and Ossie's own
     `from`/`to` says only many/one -- so it keeps the conservative assumption.
+
+    `extra_joins` holds the joins with no Ossie relationship form, parked on their
+    declaring cube. They fan out exactly as much as the ones that converted: a
+    predicate this converter could not decompose into column pairs is still a join
+    Cube will make. Reading fan-out off `relationships` alone let a metric escape the
+    check for the very reason it most deserved it -- a `many_to_one` whose predicate
+    reads a computed member converted with no warning at all, and `--strict-fanout`
+    accepted the model it exists to refuse. Orientation is normalized the way
+    `_convert_joins` does, since the parked entry keeps the raw join.
+
+    The value is a whole phrase rather than a bare name because a parked join has no
+    Ossie relationship to name. A dataset fanned out by both is attributed to the
+    relationship, which is the one a reader can act on.
     """
     out = {}
+    for cname, parked in (extra_joins or {}).items():
+        for item in parked:
+            join = item["join"]
+            rel_type = _RELATIONSHIP_ALIASES.get(snake(join["relationship"]))
+            if rel_type == "one_to_one":
+                continue
+            target = join["name"]
+            # The one side is the target, except that a one-to-many flips it onto
+            # the declaring cube -- the same swap `_convert_joins` makes.
+            fanned = cname if rel_type == "one_to_many" else target
+            out[fanned] = f"the unconvertible join '{cname}' -> '{target}'"
     for rel in relationships:
         declared = read_stash(rel).get("relationship")
         if declared and _RELATIONSHIP_ALIASES.get(snake(declared)) == "one_to_one":
             continue
-        out[rel["to"]] = rel["name"]
+        out[rel["to"]] = f"relationship '{rel['name']}'"
     return out
 
 
@@ -1513,8 +1537,8 @@ class _MeasureContext:
     """Model-wide facts every measure conversion needs.
 
     `resolver` produces a measure's Ossie expressions, `fanned_out` says which datasets a
-    relationship multiplies, `dataset_names` is what a reference can resolve to,
-    `plain_by_cube` says which members regenerate from a bare column name,
+    join multiplies and what to name as the cause, `dataset_names` is what a reference
+    can resolve to, `plain_by_cube` says which members regenerate from a bare column name,
     `pk_by_cube` is what the bare-count prediction compares against, and
     `metric_cubes`/`referenceable_measures`/`field_owners`/`base_cube` describe the
     namespaces a model-level expression resolves in. Passing them one at a time made
@@ -1760,10 +1784,9 @@ def _convert_measure(cname, mname, metric_name, measure, context):
         issues.add(
             IssueType.FANOUT_UNSAFE_METRIC, scope,
             f"a non-idempotent aggregate reads dataset '{dataset}', which "
-            f"relationship '{context.fanned_out[dataset]}' fans out; Cube "
-            f"deduplicates on "
-            f"the primary key at query time but a static Ossie expression cannot, so "
-            f"a consumer joining through that relationship may over-count")
+            f"{context.fanned_out[dataset]} fans out; Cube deduplicates on the "
+            f"primary key at query time but a static Ossie expression cannot, so "
+            f"a consumer joining through that join may over-count")
 
     metric = {
         "name": metric_name,
