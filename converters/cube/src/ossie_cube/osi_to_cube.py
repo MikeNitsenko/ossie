@@ -75,7 +75,8 @@ from ._common import (
 )
 from .converter_issues import IssueLog, IssueType
 from .expressions import (aggregate_spans, qualify_bare_columns,
-                          replace_bare_identifiers, unqualified_column_names)
+                          replace_bare_identifiers, unqualified_column_names,
+                          unsplittable_aggregate_datasets)
 
 # The order Cube's own YAML documentation and generators use, so exported files
 # read the way a hand-authored model does.
@@ -1101,14 +1102,23 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
                        f"Cube reaches the others from '{target}' through an implicit "
                        f"join, so verify a join path exists")
 
-        spans = [] if stash.get("sql") else aggregate_spans(expr)
+        spans = []
+        if not stash.get("sql"):
+            spans = aggregate_spans(expr)
+            _report_unsplittable_aggregates(issues, scope, expr, target, tables)
         # Decompose only when some aggregate belongs on another cube than the
         # public measure's. That is where splitting buys correctness: each part is
         # corrected for row multiplication on its own cube. A composite whose
         # aggregates all read the public cube gains nothing from hidden parts --
         # the correction would key on the same cube either way -- so it stays one
         # calculated measure and round-trips verbatim.
-        decomposed = len(spans) > 1 and any(
+        #
+        # One such aggregate is enough, and an empty span list satisfies nothing, so
+        # the rule needs no count alongside it. Requiring two spans as well meant a
+        # lone foreign aggregate in a larger expression went uncorrected:
+        # `SUM(users.ltv) + orders.amount` names two datasets, which puts the measure
+        # on the base cube, and the sum over `users` was then corrected on `orders`.
+        decomposed = any(
             _span_target(refs, expr[s:e], target) != target for s, e in spans)
         if decomposed:
             public_sql = _decompose_measure(
@@ -1363,6 +1373,34 @@ def _references_a_dropped_field(expr, tables, cube_names, plan):
             if fname is not None:
                 missing.add(f"'{by_cube_name.get(cname, cname)}.{fname}'")
     return missing
+
+
+def _report_unsplittable_aggregates(issues, scope, expr, target, tables):
+    """Report an aggregate that has to stay on `target` while reading another dataset.
+
+    Decomposition exists so each aggregate lands on the cube its operand reads and
+    Cube corrects it for row multiplication there. The calls named here cannot be
+    moved -- an unmodelled call, which may equally be a scalar UDF, or the aggregate
+    half of a window function; `unsplittable_aggregate_datasets` says why -- so their
+    correction keys on whichever cube the measure happens to sit on.
+
+    Nothing is lost and nothing is hidden, which is what APPROXIMATED is for: the
+    output is a fair rendering that simply asserts a placement the converter could not
+    verify. Silence was the wrong answer, because this is precisely the case the
+    per-measure correction cannot cover.
+    """
+    stranded = {resolve_identifier(tables.datasets, name) or name
+                for name in unsplittable_aggregate_datasets(expr)}
+    stranded.discard(target)
+    if not stranded:
+        return
+    named = ", ".join(sorted(stranded))
+    issues.add(
+        IssueType.APPROXIMATED, scope,
+        f"an aggregate reading {named} cannot be lifted onto its own cube -- it is "
+        f"an unrecognized call, or a window function -- so it stays on '{target}' "
+        f"and Cube corrects it for row multiplication there rather than on {named}; "
+        f"verify the value if a join fans {named} out")
 
 
 def _span_target(refs, piece, fallback):

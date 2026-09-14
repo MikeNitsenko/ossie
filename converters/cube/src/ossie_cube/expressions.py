@@ -72,14 +72,20 @@ def is_single_aggregate(expr):
     return tree is not None and isinstance(tree, _AGGREGATE_NODES)
 
 
-# The aggregate call names this converter maps to a Cube measure type. Scanned for
-# in the source text: sqlglot renames some when it renders (`APPROX_COUNT_DISTINCT`
-# comes back as `APPROX_DISTINCT`), and two calls of the same name render
-# identically, so node text cannot be used to find them in the original string.
-_AGGREGATE_NAMES = (
-    "APPROX_COUNT_DISTINCT", "APPROX_DISTINCT",
-    "COUNT", "SUM", "AVG", "MIN", "MAX",
-)
+# Any identifier that could be the name of a call. Scanning the source text rather
+# than the parse tree is forced by the offsets: sqlglot renames some aggregates when
+# it renders (`APPROX_COUNT_DISTINCT` comes back as `APPROX_DISTINCT`) and two calls
+# of the same name render identically, so node text cannot locate them in the
+# original string. What the scan must not be is *selective* -- every candidate is
+# confirmed against sqlglot below, so this only has to be generous enough to miss
+# nothing, which a list of known aggregate names could not be.
+_CALL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# An ordered-set aggregate's `WITHIN GROUP (...)` tail, and a window function's
+# `OVER`, both of which decide where a call's span really ends -- or whether it is a
+# span at all.
+_WITHIN_GROUP_RE = re.compile(r"\s*WITHIN\s+GROUP\s*\(", re.IGNORECASE)
+_OVER_RE = re.compile(r"\s*OVER\b", re.IGNORECASE)
 
 
 def aggregate_spans(expr):
@@ -111,35 +117,27 @@ def _scan_aggregates(text):
     if parse(text) is None:
         return []
     candidates = []
-    upper = text.upper()
     quoted = quoted_char_mask(text)
-    for name in _AGGREGATE_NAMES:
-        at = 0
-        while True:
-            at = upper.find(name, at)
-            if at < 0:
-                break
-            start, after = at, at + len(name)
-            at = after
-            if quoted[start]:
-                continue
-            # A call, not part of a longer identifier: boundary before, `(` after.
-            if start and (text[start - 1].isalnum() or text[start - 1] == "_"):
-                continue
-            probe = after
-            while probe < len(text) and text[probe].isspace():
-                probe += 1
-            if probe >= len(text) or text[probe] != "(":
-                continue
-            close = _match_paren(text, probe)
-            if close is None:
-                continue
-            end = close + 1
-            # Confirm the slice really is an aggregate and not, say, a UDF that
-            # happens to share a prefix.
-            node = parse(text[start:end])
-            if isinstance(node, _AGGREGATE_NODES):
-                candidates.append((start, end))
+    for match in _CALL_NAME_RE.finditer(text):
+        start = match.start()
+        if quoted[start]:
+            continue
+        # A call, not a bare name: the next thing has to be its opening paren. The
+        # regex matches maximal identifier runs, so the boundary before is given.
+        probe = match.end()
+        while probe < len(text) and text[probe].isspace():
+            probe += 1
+        if probe >= len(text) or text[probe] != "(":
+            continue
+        close = _match_paren(text, probe)
+        if close is None:
+            continue
+        end = _end_of_call(text, close + 1)
+        # Confirm the slice against sqlglot: that is what separates an aggregate from
+        # a scalar call (ROUND, COALESCE, CAST), a UDF, and a window function.
+        if _is_modelled_aggregate(parse(text[start:end])) \
+                and not _OVER_RE.match(text, end):
+            candidates.append((start, end))
 
     # Drop any span contained within another: only the outermost becomes a measure.
     candidates.sort()
@@ -149,6 +147,23 @@ def _scan_aggregates(text):
             continue
         out.append((start, end))
     return out
+
+
+def _end_of_call(text, end):
+    """Where a call's span really ends: past a trailing `WITHIN GROUP (...)`, if any.
+
+    An ordered-set aggregate carries its value-bearing column in the ORDER BY -- on
+    the wrapper, not on the function -- so a span stopping at the function's own
+    closing paren cuts `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY users.ltv)` down
+    to `PERCENTILE_CONT(0.5)`, which names no dataset at all and would be lifted onto
+    the wrong cube. It is the same trap `_is_aggregate_scope` documents for the
+    classifier, arriving here as an offset rather than a node.
+    """
+    match = _WITHIN_GROUP_RE.match(text, end)
+    if not match:
+        return end
+    close = _match_paren(text, match.end() - 1)
+    return end if close is None else close + 1
 
 
 def _match_paren(text, open_at):
@@ -185,24 +200,44 @@ _IDEMPOTENT_NODES = (
 _IDEMPOTENT_CALLS = frozenset({"BIT_OR", "BIT_AND", "BOOL_OR", "BOOL_AND"})
 
 
-def _is_aggregate_scope(node):
-    """True for a node that constitutes one aggregate, whatever shape sqlglot gave it.
+def _is_modelled_aggregate(node):
+    """True for a node sqlglot models as an aggregate outright.
 
-    Three shapes, all of which have to count:
-    - `AggFunc`, the modelled aggregates (SUM, COUNT, PERCENTILE_CONT, ...);
+    Two shapes:
+    - `AggFunc`, every aggregate sqlglot has a class for -- SUM and COUNT through
+      STDDEV, VARIANCE, MEDIAN, ARRAY_AGG, CORR, ANY_VALUE, STRING_AGG;
     - `WithinGroup`, an *ordered-set* aggregate -- the value-bearing column lives in the
       ORDER BY, on the wrapper rather than on the inner function, so examining only the
       inner one attributed `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY users.ltv)` to
-      the declaring cube instead of `users`;
-    - `Anonymous`, a call sqlglot does not model at all -- which is how LISTAGG,
-      APPROX_PERCENTILE and BIT_OR arrive, and how `LISTAGG(...) WITHIN GROUP (...)`
-      vanished from the analysis entirely.
+      the declaring cube instead of `users`. The syntax itself proves the call is an
+      aggregate, so this holds even when the function inside is one sqlglot does not
+      model (`LISTAGG(...) WITHIN GROUP (...)`).
+
+    This is the *exact* half of the answer: no scalar call reaches it -- ROUND,
+    COALESCE, CONCAT, NULLIF, GREATEST, CAST, LOWER, DATE_TRUNC, ABS and FLOOR all
+    have their own non-aggregate nodes. Being exact is what lets decomposition act on
+    it, and not merely warn: splitting a call out into its own measure on another cube
+    is a rewrite, and a false positive there emits a measure made of a scalar
+    expression.
+    """
+    return isinstance(node, (exp.AggFunc, exp.WithinGroup))
+
+
+def _is_aggregate_scope(node):
+    """True for a node that constitutes one aggregate, whatever shape sqlglot gave it.
+
+    The modelled shapes, plus `Anonymous` -- a call sqlglot does not model at all,
+    which is how LISTAGG, APPROX_PERCENTILE and BIT_OR arrive, and how
+    `LISTAGG(...) WITHIN GROUP (...)` vanished from the analysis entirely.
 
     An `Anonymous` may equally be a scalar UDF, so treating it as an aggregate
-    over-reports. That is the cheaper error: a warning by default (the fan-out policy
-    warns rather than refuses), against a silently inflated number the other way.
+    over-reports. That is the cheaper error *here*: a warning by default (the fan-out
+    policy warns rather than refuses), against a silently inflated number the other
+    way. It is not the cheaper error for decomposition, which is why that path stops
+    at `_is_modelled_aggregate` -- the two callers share the recognition and part
+    company only on the one shape nothing can classify.
     """
-    return isinstance(node, (exp.AggFunc, exp.WithinGroup, exp.Anonymous))
+    return _is_modelled_aggregate(node) or isinstance(node, exp.Anonymous)
 
 
 def is_idempotent_aggregate(node):
@@ -268,6 +303,43 @@ def unsafe_aggregate_datasets(expr):
         if not columns or any(not column.table for column in columns):
             unqualified = True
     return datasets, unqualified
+
+
+def unsplittable_aggregate_datasets(expr):
+    """Datasets read by an aggregate that decomposition has to leave where it is.
+
+    The classifier recognizes one shape more than decomposition acts on, and the
+    difference is exactly the residue this names:
+
+    - `Anonymous`, a call sqlglot does not model -- LISTAGG and APPROX_PERCENTILE
+      arrive this way, and so does any scalar UDF. Lifting one onto another cube would
+      emit a measure built from what may be a scalar expression, so it stays inlined.
+    - the aggregate half of a window function. `SUM(x) OVER (PARTITION BY y)` depends
+      on its frame, so splitting the `SUM(x)` out and leaving `OVER (...)` behind in
+      the glue text would produce something that means nothing.
+
+    Either way the call keeps sitting on the measure's own cube while reading another,
+    so Cube's per-measure row-multiplication correction is keyed on the wrong one. The
+    caller cannot fix that -- but it can say so instead of leaving it silent, which is
+    the whole reason the two paths were worth reconciling.
+
+    Returns the dataset names as written. An empty set when nothing is stranded, or
+    when the expression does not parse (the caller is already conservative there).
+    """
+    tree = parse(expr)
+    if tree is None:
+        return set()
+    # Identity, not equality: two `SUM(x)` nodes in one expression compare equal, and
+    # membership by value would strand both because one of them is windowed.
+    windowed = {id(node) for window in tree.find_all(exp.Window)
+                for node in window.walk()}
+    stranded = set()
+    for scope in _outermost_aggregate_scopes(tree):
+        if _is_modelled_aggregate(scope) and id(scope) not in windowed:
+            continue
+        stranded |= {column.table for column in scope.find_all(exp.Column)
+                     if column.table}
+    return stranded
 
 
 def _outermost_aggregate_scopes(tree):
@@ -384,12 +456,23 @@ def has_top_level_operator(expr):
 
     Used to decide whether inlining it back into a larger expression needs
     parentheses: a lone `SUM(x)` does not, `SUM(x) / 2` does.
+
+    One aggregate call spanning the whole text is a single term by definition, which
+    the character scan below cannot see for an ordered-set aggregate: the space in
+    `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY users.ltv)` sits at depth 0 and reads
+    as structure. Parenthesizing it was not merely untidy -- inlining happens once per
+    round trip, so each cycle added another pair and the expression grew without
+    bound, which is an idempotence break. Asking the scanner keeps the two readings of
+    "one aggregate call" from drifting apart.
     """
+    text = str(expr).strip()
+    if _scan_aggregates(text) == [(0, len(text))]:
+        return False
     depth, quote = 0, None
-    # Stripped first: interior whitespace is what implies structure, so a trailing
-    # newline off a YAML block scalar (`expression: |`) is not evidence of any, and
-    # counting it wrapped a lone `SUM(x)\n` in parentheses it did not need.
-    for ch in str(expr).strip():
+    # `text` was stripped above: interior whitespace is what implies structure, so a
+    # trailing newline off a YAML block scalar (`expression: |`) is not evidence of
+    # any, and counting it wrapped a lone `SUM(x)\n` in parentheses it did not need.
+    for ch in text:
         if quote:
             if ch == quote:
                 quote = None
