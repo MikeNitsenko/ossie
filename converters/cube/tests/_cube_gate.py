@@ -103,11 +103,20 @@ def _load_validator():
 
 _VALIDATOR_MODULE = None
 _VALIDATOR_ERROR = None
+# Assigned together with the module below, and initialized here so a failure between
+# the two leaves a defined name. It did not: the module was assigned first, so a
+# schema that could not be read left `_VALIDATOR_MODULE` set and `_SCHEMA` undefined,
+# and the gate -- which only asks whether the module loaded -- let every validating
+# test run into `NameError` instead of skipping. That is how a rename of the schema
+# file turned the whole spec-validation layer into 138 failures wherever jsonschema
+# happened to be installed, and into nothing at all wherever it was not.
+_SCHEMA = None
 try:
     if _VALIDATOR.exists():
-        _VALIDATOR_MODULE = _load_validator()
+        module = _load_validator()
         _SCHEMA = json.loads(
-            (_REPO_ROOT / "core-spec" / "osi-schema.json").read_text())
+            (_REPO_ROOT / "core-spec" / "ossie-schema.json").read_text())
+        _VALIDATOR_MODULE = module
 # SystemExit is deliberately included: `validate.py` reports a missing `jsonschema` by
 # calling `sys.exit(1)` at import time, and SystemExit derives from BaseException, so an
 # `except Exception` let it escape and abort pytest *collection* -- the entire suite

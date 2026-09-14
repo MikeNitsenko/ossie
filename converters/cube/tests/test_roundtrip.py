@@ -85,7 +85,7 @@ def test_export_of_the_ossie_fixture_matches_the_cube_fixture(cube_dir, ossie_fi
 @pytest.mark.parametrize("fixture", FIXTURES)
 def test_imported_ossie_validates_against_core_spec_schema(fixture):
     jsonschema = pytest.importorskip("jsonschema")
-    with open(REPO_ROOT / "core-spec" / "osi-schema.json") as fh:
+    with open(REPO_ROOT / "core-spec" / "ossie-schema.json") as fh:
         schema = json.load(fh)
     ossie, _ = convert_cube_to_ossie(load_fixture_dir(fixture))
     jsonschema.validate(parse(ossie), schema)
