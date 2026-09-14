@@ -753,6 +753,18 @@ def source_part_count(source):
     return 1 + sum(ch == "." and not mask[i] for i, ch in enumerate(s))
 
 
+def cube_reference_bodies(sql):
+    """The body of each `{...}` member reference in a Cube SQL string, in order.
+
+    Escaped braces (`\\{`, Cube's own escape for a literal one) are dropped first, so
+    a literal brace is never read as a reference.
+    """
+    if sql is None:
+        return []
+    protected = str(sql).replace("\\{", "").replace("\\}", "")
+    return [m.group(1).strip() for m in _CUBE_REF_RE.finditer(protected)]
+
+
 def sql_is_reversible(sql, plain_members=(), own_cube=None, own_measures=(),
                       measures_by_cube=None, member_lookup_by_cube=None):
     """True if translating this Cube SQL to Ossie and back reproduces it.
