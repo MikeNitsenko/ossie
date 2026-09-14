@@ -431,6 +431,76 @@ def test_a_many_to_one_join_still_makes_its_target_fanned_out():
         convert_cube_to_ossie(files, strict_fanout=True)
 
 
+def _parked_join_model(relationship="many_to_one", measure_on="customers"):
+    """Two cubes joined on a predicate that reads a *computed* member, so the join has
+    no Ossie relationship form and is parked in the stash instead."""
+    measures = ("    measures:\n"
+                "      - name: total_ltv\n"
+                "        sql: \"{CUBE}.ltv\"\n"
+                "        type: sum\n")
+    return _files(m=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    joins:\n"
+        "      - name: customers\n"
+        "        sql: \"{CUBE}.customer_key = {customers.full_key}\"\n"
+        f"        relationship: {relationship}\n"
+        "    dimensions:\n"
+        "      - name: id\n"
+        "        sql: id\n"
+        "        type: number\n"
+        "        primary_key: true\n"
+        + (measures if measure_on == "orders" else "") +
+        "  - name: customers\n"
+        "    sql_table: public.customers\n"
+        "    dimensions:\n"
+        "      - name: id\n"
+        "        sql: id\n"
+        "        type: number\n"
+        "        primary_key: true\n"
+        "      - name: full_key\n"
+        "        sql: \"CONCAT({CUBE}.region, '-', {CUBE}.code)\"\n"
+        "        type: string\n"
+        + (measures if measure_on == "customers" else "")
+    ))
+
+
+def test_a_join_with_no_ossie_form_still_fans_its_target_out():
+    """Fan-out was read off `relationships` alone, so a join parked for want of an
+    Ossie form was invisible to the check -- and a `many_to_one` whose predicate reads
+    a computed member converted with no warning at all, which is the case the check
+    most exists for. Strict mode accepted the model it exists to refuse."""
+    files = _parked_join_model()
+    _, issues = convert_cube_to_ossie(files)
+    assert issues.of_type(IssueType.PARKED_IN_META)
+    reported = issues.of_type(IssueType.FANOUT_UNSAFE_METRIC)
+    assert reported
+    # Named by the join, since a parked join has no Ossie relationship to name.
+    assert "the unconvertible join 'orders' -> 'customers'" in reported[0].detail
+    with pytest.raises(ConversionError, match="FANOUT_UNSAFE_METRIC"):
+        convert_cube_to_ossie(files, strict_fanout=True)
+
+
+def test_a_parked_one_to_many_fans_out_its_declaring_cube():
+    """Orientation is normalized the way a converted join's is: the one side is the
+    target for a many-to-one, and the declaring cube once a one-to-many flips it. The
+    measure here sits on `orders`, which is the fanned-out side only after the flip."""
+    with pytest.raises(ConversionError, match="FANOUT_UNSAFE_METRIC"):
+        convert_cube_to_ossie(
+            _parked_join_model("one_to_many", measure_on="orders"),
+            strict_fanout=True)
+
+
+@pytest.mark.parametrize("measure_on", ["orders", "customers"])
+def test_a_parked_one_to_one_fans_out_neither_side(measure_on):
+    """One-to-one multiplies neither side whether or not the predicate converted, so
+    the exclusion has to survive parking too."""
+    _, issues = convert_cube_to_ossie(
+        _parked_join_model("one_to_one", measure_on=measure_on))
+    assert not issues.of_type(IssueType.FANOUT_UNSAFE_METRIC)
+
+
 def test_one_to_one_keeps_its_declared_orientation():
     files = _files(m=_ONE_TO_MANY["model/cubes/m.yml"].replace(
         "one_to_many", "one_to_one"))
