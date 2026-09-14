@@ -639,6 +639,41 @@ def test_a_ratio_is_split_into_one_measure_per_aggregate():
         "meta": {"ossie": {"decomposed": True}}}
 
 
+_SAFE_DIVISION = ("CASE WHEN COUNT(DISTINCT users.id) = 0 THEN 0 "
+                  "ELSE SUM(orders.amount) / COUNT(DISTINCT users.id) END")
+
+
+def test_glue_text_between_aggregates_is_not_read_as_a_standalone_expression():
+    """The tail of a safe-division ratio is the fragment `" END"`, which parses alone
+    as a bare column named `END`. Qualifying it there replaced the keyword with
+    `{CUBE}.END`, leaving the CASE unterminated and nothing for import to recover.
+    Names have to come from the whole expression, which is where `END` is the
+    terminator it is."""
+    files, _ = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL, _metric("rpu", _SAFE_DIVISION)))
+    assert by_name(_cubes(files)["orders"]["measures"])["rpu"]["sql"] == (
+        "CASE WHEN {users.rpu_part_1} = 0 THEN 0 "
+        "ELSE {CUBE.rpu_part_2} / {users.rpu_part_3} END")
+
+
+def test_a_safe_division_ratio_round_trips():
+    """The round-trip claim has to hold for the shape it is most often written in."""
+    files, _ = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL, _metric("rpu", _SAFE_DIVISION)))
+    ossie, _ = convert_cube_to_ossie(files)
+    assert expr_of(by_name(model_of(ossie)["metrics"])["rpu"]) == _SAFE_DIVISION
+
+
+def test_a_bare_column_in_glue_text_is_still_qualified():
+    """The counterpart: reading names off the whole must not stop glue text from being
+    qualified at all. `tax_rate` is no declared field, so it is a raw column."""
+    files, _ = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL,
+        _metric("m", "SUM(orders.amount) * tax_rate / COUNT(DISTINCT users.id)")))
+    assert by_name(_cubes(files)["orders"]["measures"])["m"]["sql"] == (
+        "{CUBE.m_part_1} * {CUBE}.tax_rate / {users.m_part_2}")
+
+
 def test_a_dotted_token_inside_a_string_literal_is_left_alone():
     """Cube compiles a YAML `sql` as a Python f-string, so a `{...}` written into a
     string literal is still interpolated -- it would replace the literal's own text

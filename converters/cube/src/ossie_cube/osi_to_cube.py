@@ -1296,18 +1296,22 @@ class _MetricReferences:
 
         `context` supplies the parseable whole when `text` is a fragment of it --
         a decomposition segment such as `" / ("` cannot be parsed for references
-        on its own, but the names found in the whole apply to every fragment.
+        on its own, but the names found in the whole apply to every fragment. That
+        holds for column qualification as much as for references: a fragment is not
+        a standalone expression, and reading one as if it were misclassified its
+        trailing syntax. The tail of a safe-division ratio,
+        `CASE WHEN COUNT(...) = 0 THEN 0 ELSE SUM(...) / COUNT(...) END`, is the
+        fragment `" END"`, which parses alone as a bare column named `END` -- so the
+        keyword was replaced by `{CUBE}.END`, leaving the CASE unterminated and
+        nothing for import to recover. Against the whole, `END` is the terminator it
+        is, while a genuine bare column in glue text still qualifies.
         """
         whole = context if context is not None else text
-        attributed = self._fields_in(whole)
-        text = replace_bare_identifiers(
-            text, {name: f"{cube}.{name}" for name, cube in attributed.items()})
-        referenced = self._referenced_in(whole)
-        if not referenced:
-            return qualify_bare_columns(
-                ossie_expr_to_cube_sql(text, target, self._tables))
+        attributed = {name: f"{cube}.{name}"
+                      for name, cube in self._fields_in(whole).items()}
         masks, substitutions = {}, {}
-        for i, (written, key) in enumerate(sorted(referenced.items())):
+        for i, (written, key) in enumerate(
+                sorted(self._referenced_in(whole).items())):
             sentinel = f"__ossie_mref_{i}__"
             masks[written] = sentinel
             detail = self._details[key]
@@ -1315,12 +1319,21 @@ class _MetricReferences:
             substitutions[sentinel] = (
                 "{" + detail["measure"] + "}" if cube == target
                 else "{" + cube + "." + detail["measure"] + "}")
-        out = ossie_expr_to_cube_sql(
-            replace_bare_identifiers(text, masks), target, self._tables)
+
+        def convert(fragment):
+            fragment = replace_bare_identifiers(fragment, attributed)
+            fragment = replace_bare_identifiers(fragment, masks)
+            return ossie_expr_to_cube_sql(fragment, target, self._tables)
+
+        out = convert(text)
         # Whatever bare identifiers remain are raw columns (the metric references
         # are sentinels at this point), so they get the same `{CUBE}.column`
-        # qualification every other generated member SQL does.
-        out = qualify_bare_columns(out)
+        # qualification every other generated member SQL does. The names are taken
+        # from the converted whole and only *applied* to the fragment, which is the
+        # part `qualify_bare_columns` cannot do for itself.
+        names = unqualified_column_names(out if context is None else convert(whole))
+        out = replace_bare_identifiers(
+            out, {name: "{CUBE}." + name for name in names or ()})
         for sentinel, replacement in substitutions.items():
             out = out.replace(sentinel, replacement)
         return out
