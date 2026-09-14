@@ -269,6 +269,60 @@ def test_a_parked_aggregate_over_a_measure_comes_back_verbatim():
         {"name": "scaled", "sql": "{unit_count} * 2", "type": "sum"}]
 
 
+@pytest.mark.parametrize("operand", ["NULL", "TRUE", "CURRENT_DATE"])
+def test_a_bare_keyword_operand_is_not_turned_into_a_column(operand):
+    """The same mistake as reading a measure reference as a column, reached by a
+    different token: `_operand` qualified anything shaped like a bare identifier, and
+    a real column never arrives in that shape (`_translate` has already dotted it).
+    What did arrive was every token sqlglot declines to call a column -- so
+    `sql: NULL` became SUM(orders.NULL), inventing a column out of a keyword."""
+    files = _files(orders=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    dimensions:\n"
+        "      - name: id\n"
+        "        sql: id\n"
+        "        type: number\n"
+        "        primary_key: true\n"
+        "    measures:\n"
+        "      - name: m\n"
+        f"        sql: \"{operand}\"\n"
+        "        type: sum\n"
+    ))
+    ossie, _ = convert_cube_to_ossie(files)
+    assert expr_of(by_name(model_of(ossie)["metrics"])["m"]) == f"SUM({operand})"
+    back, _ = convert_ossie_to_cube(ossie)
+    assert parse_files(back) == parse_files(files)
+
+
+def test_a_real_column_operand_is_still_qualified():
+    """The counterpart: dropping that branch must not leave a genuine column bare.
+    `_translate` qualifies it on the way through, which is why the branch was
+    unreachable for columns in the first place."""
+    files = _files(orders=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    dimensions:\n"
+        "      - name: id\n"
+        "        sql: id\n"
+        "        type: number\n"
+        "        primary_key: true\n"
+        "    measures:\n"
+        "      - name: m\n"
+        "        sql: units\n"
+        "        type: sum\n"
+        "      - name: n\n"
+        "        sql: \"{CUBE}.units\"\n"
+        "        type: count_distinct\n"
+    ))
+    ossie, _ = convert_cube_to_ossie(files)
+    metrics = by_name(model_of(ossie)["metrics"])
+    assert expr_of(metrics["m"]) == "SUM(orders.units)"
+    assert expr_of(metrics["n"]) == "COUNT(DISTINCT orders.units)"
+
+
 def test_a_filter_naming_a_windowed_measure_parks_instead_of_crashing():
     """_NoStaticForm was caught on the calculated-measure branch only, so a `filters`
     entry naming a windowed measure raised straight out of convert_cube_to_ossie as a
@@ -1522,6 +1576,43 @@ def test_measure_without_a_type_is_rejected():
         convert_cube_to_ossie(files)
 
 
+@pytest.mark.parametrize("mtype,body,expected", [
+    # A calculated measure carries its whole expression in `sql`, so it cannot omit it.
+    ("number", "", "type 'number' requires 'sql'"),
+    # An aggregate needs something to aggregate. `count` is the sole exception, and it
+    # has its own path: no sql means COUNT over the primary key.
+    ("sum", "", "type 'sum' requires 'sql'"),
+    ("not_an_aggregate", "        sql: amount\n", "unknown aggregate type"),
+])
+def test_a_malformed_measure_is_rejected_cleanly(mtype, body, expected):
+    """The input-validation paths of measure resolution, which report on the measure
+    by name rather than failing somewhere further in."""
+    files = _files(m=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: t\n"
+        "    measures:\n"
+        "      - name: m\n"
+        f"        type: {mtype}\n"
+        f"{body}"
+    ))
+    with pytest.raises(ConversionError, match=expected):
+        convert_cube_to_ossie(files)
+
+
+@pytest.mark.parametrize("sql,expected", [
+    ("{a} + {CUBE.b}", ["a", "CUBE.b"]),
+    ("{other.measure}", ["other.measure"]),
+    ("amount * 2", []),
+    # Cube's escape for a literal brace is not a reference.
+    ("\\{literal\\} + {x}", ["x"]),
+    (None, []),
+])
+def test_cube_reference_bodies_reads_only_real_references(sql, expected):
+    from ossie_cube._common import cube_reference_bodies
+    assert cube_reference_bodies(sql) == expected
+
+
 def test_unknown_dimension_type_is_rejected():
     files = _files(m=(
         "cubes:\n"
@@ -1686,6 +1777,8 @@ def test_a_reference_inside_a_literal_is_still_translated_on_import():
     # Scalar calls are not aggregates, however generous the scan for candidates is.
     ("ROUND(SUM(a.x), 2) + COALESCE(MIN(b.y), 0)", ["SUM(a.x)", "MIN(b.y)"]),
     ("CAST(a.x AS INT) + LOWER(b.y)", []),
+    # Only the outermost of a nested pair, resolved on the offsets.
+    ("SUM(SUM(a.x)) / COUNT(b.y)", ["SUM(SUM(a.x))", "COUNT(b.y)"]),
 ])
 def test_aggregate_spans_only_matches_real_calls(expr, expected):
     from ossie_cube.expressions import aggregate_spans
@@ -1730,6 +1823,9 @@ def test_unsplittable_aggregates_are_the_classifier_minus_decomposition(expr, ex
     # at depth 0 and reads as structure to the character scan.
     ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY a.x)", False),
     ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY a.x) / 2", True),
+    # Unparseable: the aggregate check declines to answer and the character scan
+    # decides, which for an unclosed paren never returns to depth 0.
+    ("SUM(a.x /// COUNT(", False),
 ])
 def test_has_top_level_operator_ignores_quoted_text(expr, expected):
     from ossie_cube.expressions import has_top_level_operator
