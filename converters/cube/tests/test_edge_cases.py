@@ -209,6 +209,100 @@ def test_a_multi_stage_measure_survives_the_round_trip_in_place():
     assert names == ["revenue", "rolling", "cnt"]
 
 
+_MEASURE_OVER_MEASURE = _files(orders=(
+    "cubes:\n"
+    "  - name: orders\n"
+    "    sql_table: public.orders\n"
+    "    dimensions:\n"
+    "      - name: id\n"
+    "        sql: id\n"
+    "        type: number\n"
+    "        primary_key: true\n"
+    "    measures:\n"
+    "      - name: unit_count\n"
+    "        sql: units\n"
+    "        type: sum\n"
+    "      - name: doubled\n"
+    "        sql: \"{unit_count} * 2\"\n"
+    "        type: number\n"
+    "      - name: summed\n"
+    "        sql: \"{unit_count}\"\n"
+    "        type: sum\n"
+    "      - name: counted\n"
+    "        sql: \"{unit_count}\"\n"
+    "        type: count_distinct\n"
+    "      - name: scaled\n"
+    "        sql: \"{unit_count} * 2\"\n"
+    "        type: sum\n"
+))
+
+
+def test_an_aggregate_over_a_measure_reference_is_parked_not_invented():
+    """Cube wraps a non-calculated measure's sql in the aggregate, so a measure
+    reference inside it is a nested aggregate -- SUM(SUM(units)) -- which Ossie cannot
+    say. Every spelling the converter reached for instead asserted something false: a
+    bare reference became `SUM(orders.unit_count)`, naming a column the table does not
+    have, and re-export wrote that column back into Cube. A calculated measure is the
+    one shape where the reference is genuine, and it still converts."""
+    ossie, issues = convert_cube_to_ossie(_MEASURE_OVER_MEASURE)
+    metrics = by_name(model_of(ossie)["metrics"])
+    assert sorted(metrics) == ["doubled", "unit_count"]
+    assert expr_of(metrics["doubled"]) == "unit_count * 2"
+
+    parked = {i.element_name for i in issues.of_type(IssueType.PARKED_IN_META)}
+    assert parked == {"orders.summed", "orders.counted", "orders.scaled"}
+    assert "nested aggregate" in issues.of_type(IssueType.PARKED_IN_META)[0].detail
+
+
+def test_a_parked_aggregate_over_a_measure_comes_back_verbatim():
+    """Parking is only honest if it is lossless: the measures ride on the dataset's
+    stash with their positions, like a multi-stage measure, and export puts them back
+    exactly as written."""
+    ossie, _ = convert_cube_to_ossie(_MEASURE_OVER_MEASURE)
+    back, _ = convert_ossie_to_cube(ossie)
+    measures = parse(back["model/cubes/orders.yml"])["cubes"][0]["measures"]
+    assert [m["name"] for m in measures] == [
+        "unit_count", "doubled", "summed", "counted", "scaled"]
+    assert [m for m in measures if m["name"] == "summed"] == [
+        {"name": "summed", "sql": "{unit_count}", "type": "sum"}]
+    assert [m for m in measures if m["name"] == "scaled"] == [
+        {"name": "scaled", "sql": "{unit_count} * 2", "type": "sum"}]
+
+
+def test_a_filter_naming_a_windowed_measure_parks_instead_of_crashing():
+    """_NoStaticForm was caught on the calculated-measure branch only, so a `filters`
+    entry naming a windowed measure raised straight out of convert_cube_to_ossie as a
+    traceback -- one measure Ossie cannot express took the whole model with it."""
+    files = _files(m=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    dimensions:\n"
+        "      - name: id\n"
+        "        sql: id\n"
+        "        type: number\n"
+        "        primary_key: true\n"
+        "    measures:\n"
+        "      - name: rolling\n"
+        "        sql: units\n"
+        "        type: sum\n"
+        "        rolling_window:\n"
+        "          trailing: 30 day\n"
+        "      - name: filtered\n"
+        "        sql: units\n"
+        "        type: sum\n"
+        "        filters:\n"
+        "          - sql: \"{rolling} > 0\"\n"
+    ))
+    ossie, issues = convert_cube_to_ossie(files)
+    assert "metrics" not in model_of(ossie)
+    assert {i.element_name for i in issues.of_type(
+        IssueType.MULTI_STAGE_MEASURE_PARKED)} == {"orders.rolling",
+                                                   "orders.filtered"}
+    back, _ = convert_ossie_to_cube(ossie)
+    assert parse_files(back) == parse_files(files)
+
+
 def test_count_star_is_not_emitted_as_a_bare_cube_count():
     """A bare Cube `type: count` is this converter's form for
     `COUNT(DISTINCT <pk>)`. Emitting one for `COUNT(*)` round-tripped back as a

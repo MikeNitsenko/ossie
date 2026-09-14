@@ -48,6 +48,7 @@ from ._common import (
     ConversionError,
     classify_metric_expression,
     cube_file,
+    cube_reference_bodies,
     cube_sql_to_ossie,
     dump_yaml,
     filtered_operand,
@@ -1246,11 +1247,19 @@ def _rebuild_join_sql(target, pairs):
 # --- measures -------------------------------------------------------------------
 
 class _NoStaticForm(Exception):
-    """A measure this one depends on has no static Ossie form, so nor does this one."""
+    """This measure has no static Ossie form, and why.
 
-    def __init__(self, dependency):
-        super().__init__(dependency)
-        self.dependency = dependency
+    Raised wherever the reason is known -- a dependency that has none, or a shape
+    Ossie cannot say -- and reported once, by whichever `_expression` call is
+    resolving the measure it belongs to. Carrying the finished issue rather than just
+    the dependency is what lets the two reasons keep their own wording while sharing
+    one handler.
+    """
+
+    def __init__(self, detail, issue_type=IssueType.MULTI_STAGE_MEASURE_PARKED):
+        super().__init__(detail)
+        self.detail = detail
+        self.issue_type = issue_type
 
 
 class _MeasureResolver:
@@ -1364,6 +1373,22 @@ class _MeasureResolver:
                     f"other than the query's, which an Ossie expression has no form "
                     f"for; preserved in custom_extensions only")
             return self._remember(cache, key, None)
+        # Every path below resolves references, and any of them can turn out to have
+        # no static form -- the measure's own sql, but equally a `filters` entry. The
+        # handler sat on one of them, so a filter reading a windowed measure raised
+        # through `convert_cube_to_ossie` and killed the whole conversion with a
+        # traceback: one measure Ossie cannot express took the model with it.
+        try:
+            expr = self._static_form(key, measure, mtype, scope, stack, inline_refs)
+        except _NoStaticForm as missing:
+            if not inline_refs:
+                self._issues.add(missing.issue_type, scope, missing.detail)
+            expr = None
+        return self._remember(cache, key, expr)
+
+    def _static_form(self, key, measure, mtype, scope, stack, inline_refs):
+        """The measure's Ossie expression, or raise `_NoStaticForm` saying why not."""
+        cname, _ = key
         sql = measure.get("sql")
         filter_exprs = [
             self._translate(f["sql"], cname, stack + (key,), inline_refs)
@@ -1375,37 +1400,61 @@ class _MeasureResolver:
             if sql is None:
                 raise ConversionError(
                     f"measure '{scope}': type '{mtype}' requires 'sql'")
-            try:
-                expr = self._translate(sql, cname, stack + (key,), inline_refs)
-            except _NoStaticForm as missing:
-                if not inline_refs:
-                    self._issues.add(
-                        IssueType.MULTI_STAGE_MEASURE_PARKED, scope,
-                        f"references '{missing.dependency}', which is computed over a "
-                        f"grain other than the query's and has no Ossie form; this "
-                        f"measure has none either and is preserved in "
-                        f"custom_extensions only")
-                return self._remember(cache, key, None)
-            return self._remember(cache, key, filtered_operand(expr, filter_exprs))
-        if mtype == "count":
-            if sql is None:
-                return self._remember(cache, key, primary_key_count_expression(
-                    cname, self._pk.get(cname) or [], filter_exprs))
-            operand = filtered_operand(
-                self._operand(cname, sql, stack + (key,), inline_refs), filter_exprs)
-            return self._remember(cache, key, f"COUNT({operand})")
-        func = AGG_TO_OSSIE_FUNC.get(mtype)
+            expr = self._translate(sql, cname, stack + (key,), inline_refs)
+            return filtered_operand(expr, filter_exprs)
+        if mtype == "count" and sql is None:
+            return primary_key_count_expression(
+                cname, self._pk.get(cname) or [], filter_exprs)
+        func = "COUNT" if mtype == "count" else AGG_TO_OSSIE_FUNC.get(mtype)
         if func is None:
             raise ConversionError(
                 f"measure '{scope}': unknown aggregate type '{mtype}'")
         if sql is None:
             raise ConversionError(
                 f"measure '{scope}': type '{mtype}' requires 'sql'")
+        # This measure *is* an aggregate, so Cube wraps its sql in the aggregate
+        # function. A measure reference inside that sql stands for another aggregate,
+        # and the result is a nested one: `type: sum` over `{unit_count}` is Cube's
+        # own SUM(SUM(units)). No Ossie expression says that, and every spelling the
+        # converter reached for instead asserted something false -- a bare reference
+        # became `SUM(orders.unit_count)`, naming a column the table does not have,
+        # and re-export put that column back into Cube.
+        referenced = self._measure_reference_in(sql, cname)
+        if referenced is not None:
+            raise _NoStaticForm(
+                f"type '{mtype}' over a reference to measure '{referenced}': Cube "
+                f"wraps the sql in the aggregate, so this is a nested aggregate, "
+                f"which an Ossie expression has no form for; preserved in "
+                f"custom_extensions only",
+                IssueType.PARKED_IN_META)
         operand = filtered_operand(
             self._operand(cname, sql, stack + (key,), inline_refs), filter_exprs)
-        return self._remember(
-            cache, key, f"COUNT(DISTINCT {operand})" if func == "COUNT_DISTINCT"
-            else f"{func}({operand})")
+        return (f"COUNT(DISTINCT {operand})" if func == "COUNT_DISTINCT"
+                else f"{func}({operand})")
+
+    def _measure_reference_in(self, sql, cname):
+        """The first measure a `{...}` reference in `sql` names, as `cube.measure`.
+
+        A generated decomposition part counts: it is an aggregate like any other, and
+        inlining one into an enclosing aggregate nests them just the same.
+        """
+        for body in cube_reference_bodies(sql):
+            target = self._reference_target(body, cname)
+            if target is not None:
+                return f"{target[0]}.{target[1]}"
+        return None
+
+    def _reference_target(self, body, cname):
+        """The (cube, measure) a reference body names, or None when it names no
+        measure -- a dimension, a raw column, or another cube's member."""
+        head, _, rest = body.partition(".")
+        if rest:
+            target_cube = cname if head in ("CUBE", "TABLE") else head
+            target_name = rest
+        else:
+            target_cube, target_name = cname, body
+        return ((target_cube, target_name)
+                if self.is_measure(target_cube, target_name) else None)
 
     def _remember(self, cache, key, expr):
         """Cache one measure's expression.
@@ -1445,15 +1494,10 @@ class _MeasureResolver:
         bare identifier. Inlined text is parenthesized to keep the referenced
         measure's precedence.
         """
-        head, _, rest = body.partition(".")
-        if rest:
-            target_cube = cname if head in ("CUBE", "TABLE") else head
-            target_name = rest
-        else:
-            target_cube, target_name = cname, body
-        if not self.is_measure(target_cube, target_name):
+        target = self._reference_target(body, cname)
+        if target is None:
             return None
-        target = (target_cube, target_name)
+        target_cube, target_name = target
         inner = self._expression(target_cube, target_name, stack,
                                  inline_refs=inline_refs)
         if inner is None:
@@ -1461,7 +1505,10 @@ class _MeasureResolver:
             # neither does this one. Aborting the whole conversion over it was wrong: the
             # dependent is parked alongside its dependency, the same as any other measure
             # Ossie cannot express.
-            raise _NoStaticForm(f"{target_cube}.{target_name}")
+            raise _NoStaticForm(
+                f"references '{target_cube}.{target_name}', which is computed over a "
+                f"grain other than the query's and has no Ossie form; this measure "
+                f"has none either and is preserved in custom_extensions only")
         metric_name = self._metric_names.get(target)
         if not inline_refs and metric_name is not None \
                 and is_referenceable_name(metric_name):
@@ -1478,6 +1525,12 @@ class _MeasureResolver:
         Ossie model-level metrics use. A computed operand keeps its own qualifiers
         and is emitted as-is; the owning cube rides in the stash either way, so
         export still puts the measure back on the right cube.
+
+        A bare identifier here is always a column, because `_static_form` refuses the
+        measure the operand could otherwise have resolved to before reaching this
+        point. Qualifying without that guarantee is what turned a reference to
+        measure `unit_count` into `orders.unit_count` -- a column the table does not
+        have, which re-export then wrote back into Cube as `{CUBE}.unit_count`.
         """
         translated = self._translate(sql, cname, stack, inline_refs).strip()
         if is_simple_identifier(translated):
