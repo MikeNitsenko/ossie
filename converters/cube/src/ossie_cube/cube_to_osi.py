@@ -1390,11 +1390,10 @@ class _MeasureResolver:
         """The measure's Ossie expression, or raise `_NoStaticForm` saying why not."""
         cname, _ = key
         sql = measure.get("sql")
-        filter_exprs = [
-            self._translate(f["sql"], cname, stack + (key,), inline_refs)
-            for f in (measure.get("filters") or [])
-            if isinstance(f, dict) and f.get("sql")
-        ]
+        filters = [f["sql"] for f in (measure.get("filters") or [])
+                   if isinstance(f, dict) and f.get("sql")]
+        filter_exprs = [self._translate(f, cname, stack + (key,), inline_refs)
+                        for f in filters]
 
         if mtype in CALCULATED_MEASURE_TYPES:
             if sql is None:
@@ -1402,24 +1401,24 @@ class _MeasureResolver:
                     f"measure '{scope}': type '{mtype}' requires 'sql'")
             expr = self._translate(sql, cname, stack + (key,), inline_refs)
             return filtered_operand(expr, filter_exprs)
-        if mtype == "count" and sql is None:
-            return primary_key_count_expression(
-                cname, self._pk.get(cname) or [], filter_exprs)
         func = "COUNT" if mtype == "count" else AGG_TO_OSSIE_FUNC.get(mtype)
         if func is None:
             raise ConversionError(
                 f"measure '{scope}': unknown aggregate type '{mtype}'")
-        if sql is None:
-            raise ConversionError(
-                f"measure '{scope}': type '{mtype}' requires 'sql'")
-        # This measure *is* an aggregate, so Cube wraps its sql in the aggregate
-        # function. A measure reference inside that sql stands for another aggregate,
+        # This measure *is* an aggregate, so Cube wraps everything below in the
+        # aggregate function. A measure reference there stands for another aggregate,
         # and the result is a nested one: `type: sum` over `{unit_count}` is Cube's
         # own SUM(SUM(units)). No Ossie expression says that, and every spelling the
         # converter reached for instead asserted something false -- a bare reference
         # became `SUM(orders.unit_count)`, naming a column the table does not have,
         # and re-export put that column back into Cube.
-        referenced = self._measure_reference_in(sql, cname)
+        #
+        # `filters` are checked alongside `sql` because they end up inside the same
+        # aggregate: `filtered_operand` folds them in as AGG(CASE WHEN ... THEN ...),
+        # so a filter naming a measure nests exactly as the operand would. Checking
+        # only the operand left that one converting silently. A bare `count` has no
+        # operand at all and still takes filters, which is why this precedes it.
+        referenced = self._measure_reference_in([sql, *filters], cname)
         if referenced is not None:
             raise _NoStaticForm(
                 f"type '{mtype}' over a reference to measure '{referenced}': Cube "
@@ -1427,21 +1426,32 @@ class _MeasureResolver:
                 f"which an Ossie expression has no form for; preserved in "
                 f"custom_extensions only",
                 IssueType.PARKED_IN_META)
+        if mtype == "count" and sql is None:
+            return primary_key_count_expression(
+                cname, self._pk.get(cname) or [], filter_exprs)
+        if sql is None:
+            raise ConversionError(
+                f"measure '{scope}': type '{mtype}' requires 'sql'")
         operand = filtered_operand(
             self._operand(cname, sql, stack + (key,), inline_refs), filter_exprs)
         return (f"COUNT(DISTINCT {operand})" if func == "COUNT_DISTINCT"
                 else f"{func}({operand})")
 
-    def _measure_reference_in(self, sql, cname):
-        """The first measure a `{...}` reference in `sql` names, as `cube.measure`.
+    def _measure_reference_in(self, sqls, cname):
+        """The first measure a `{...}` reference in any of `sqls` names.
 
         A generated decomposition part counts: it is an aggregate like any other, and
         inlining one into an enclosing aggregate nests them just the same.
+
+        References inside a string literal count too, because Cube compiles a YAML
+        `sql` as a Python f-string and interpolates them there as well -- the same
+        reason export refuses to emit one into a literal.
         """
-        for body in cube_reference_bodies(sql):
-            target = self._reference_target(body, cname)
-            if target is not None:
-                return f"{target[0]}.{target[1]}"
+        for sql in sqls:
+            for body in cube_reference_bodies(sql):
+                target = self._reference_target(body, cname)
+                if target is not None:
+                    return f"{target[0]}.{target[1]}"
         return None
 
     def _reference_target(self, body, cname):

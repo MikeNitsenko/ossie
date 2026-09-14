@@ -323,6 +323,59 @@ def test_a_real_column_operand_is_still_qualified():
     assert expr_of(metrics["n"]) == "COUNT(DISTINCT orders.units)"
 
 
+@pytest.mark.parametrize("head", [
+    "      - name: m\n        sql: units\n        type: sum\n",
+    # A bare `count` has no operand at all and still takes filters.
+    "      - name: m\n        type: count\n",
+])
+def test_a_filter_naming_a_measure_nests_just_as_the_operand_would(head):
+    """`filtered_operand` folds filters into the aggregate as
+    AGG(CASE WHEN ... THEN ...), so a filter naming a measure is the same nested
+    aggregate as an operand naming one -- it was converting silently while the
+    operand was refused."""
+    files = _files(orders=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    dimensions:\n"
+        "      - name: id\n        sql: id\n        type: number\n"
+        "        primary_key: true\n"
+        "    measures:\n"
+        "      - name: unit_count\n        sql: units\n        type: sum\n"
+        + head +
+        "        filters:\n          - sql: \"{unit_count} > 0\"\n"
+    ))
+    ossie, issues = convert_cube_to_ossie(files)
+    assert [m["name"] for m in model_of(ossie)["metrics"]] == ["unit_count"]
+    assert [i.element_name
+            for i in issues.of_type(IssueType.PARKED_IN_META)] == ["orders.m"]
+    # Lossless: the measure comes back with its filters exactly as written.
+    back, _ = convert_ossie_to_cube(ossie)
+    measures = parse(back["model/cubes/orders.yml"])["cubes"][0]["measures"]
+    assert [m for m in measures if m["name"] == "m"] == [
+        parse(files["model/cubes/orders.yml"])["cubes"][0]["measures"][1]]
+
+
+def test_a_filter_naming_a_plain_column_still_converts():
+    """The counterpart: only a *measure* reference nests. An ordinary filter folds
+    into the aggregate as it always did."""
+    files = _files(orders=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    dimensions:\n"
+        "      - name: id\n        sql: id\n        type: number\n"
+        "        primary_key: true\n"
+        "    measures:\n"
+        "      - name: m\n        sql: units\n        type: sum\n"
+        "        filters:\n          - sql: \"status = 'x'\"\n"
+    ))
+    ossie, issues = convert_cube_to_ossie(files)
+    assert expr_of(by_name(model_of(ossie)["metrics"])["m"]) == (
+        "SUM(CASE WHEN (orders.status = 'x') THEN orders.units END)")
+    assert not issues.of_type(IssueType.PARKED_IN_META)
+
+
 def test_a_filter_naming_a_windowed_measure_parks_instead_of_crashing():
     """_NoStaticForm was caught on the calculated-measure branch only, so a `filters`
     entry naming a windowed measure raised straight out of convert_cube_to_ossie as a

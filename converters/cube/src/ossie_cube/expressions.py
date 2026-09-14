@@ -458,20 +458,26 @@ def has_top_level_operator(expr):
     parentheses: a lone `SUM(x)` does not, `SUM(x) / 2` does.
 
     One aggregate call spanning the whole text is a single term by definition, which
-    the character scan below cannot see for an ordered-set aggregate: the space in
+    the character scan cannot see for an ordered-set aggregate: the space in
     `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY users.ltv)` sits at depth 0 and reads
     as structure. Parenthesizing it was not merely untidy -- inlining happens once per
     round trip, so each cycle added another pair and the expression grew without
     bound, which is an idempotence break. Asking the scanner keeps the two readings of
     "one aggregate call" from drifting apart.
+
+    Only *whitespace* at depth 0 is ambiguous that way. An operator there cannot occur
+    inside a single call -- everything after the name is parenthesized, and an
+    ordered-set aggregate puts only `WITHIN GROUP` between its two groups -- so it
+    settles the question outright. That ordering is what keeps the scanner off the hot
+    path: this runs once per reference while a measure is inlined, over text that
+    doubles at every step of a reference chain, and `SUM(x)` and `SUM(a) + SUM(a)`
+    both now answer without parsing anything.
     """
     text = str(expr).strip()
-    if _scan_aggregates(text) == [(0, len(text))]:
-        return False
-    depth, quote = 0, None
-    # `text` was stripped above: interior whitespace is what implies structure, so a
-    # trailing newline off a YAML block scalar (`expression: |`) is not evidence of
-    # any, and counting it wrapped a lone `SUM(x)\n` in parentheses it did not need.
+    depth, quote, spaced = 0, None, False
+    # `text` is stripped: interior whitespace is what implies structure, so a trailing
+    # newline off a YAML block scalar (`expression: |`) is not evidence of any, and
+    # counting it wrapped a lone `SUM(x)\n` in parentheses it did not need.
     for ch in text:
         if quote:
             if ch == quote:
@@ -482,7 +488,13 @@ def has_top_level_operator(expr):
             depth += 1
         elif ch == ")":
             depth -= 1
-        elif depth == 0 and (ch in "+-*/%<>=|&" or ch.isspace()):
-            # Whitespace at depth 0 also implies structure (`CASE WHEN ...`).
+        elif depth == 0 and ch in "+-*/%<>=|&":
             return True
-    return False
+        elif depth == 0 and ch.isspace():
+            spaced = True
+    if not spaced:
+        return False
+    # Whitespace alone, so this may still be one call: `SUM (x)`, or an ordered-set
+    # aggregate. The scanner is the same authority decomposition uses for where a call
+    # begins and ends, so the two cannot disagree about it.
+    return _scan_aggregates(text) != [(0, len(text))]
