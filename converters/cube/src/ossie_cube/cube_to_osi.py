@@ -1521,21 +1521,24 @@ class _MeasureResolver:
     def _operand(self, cname, sql, stack, inline_refs):
         """Translate an aggregate's operand into an Ossie reference.
 
-        A same-cube member or bare column becomes `cube.name` -- the qualified form
-        Ossie model-level metrics use. A computed operand keeps its own qualifiers
-        and is emitted as-is; the owning cube rides in the stash either way, so
-        export still puts the measure back on the right cube.
+        `_translate` already qualifies: it runs the operand through
+        `qualify_bare_columns`, so a bare column becomes `{CUBE}.name`, and then
+        renders own-cube references with `self_prefix` -- so every real column
+        arrives here as the `dataset.column` form model-level metrics use.
 
-        A bare identifier here is always a column, because `_static_form` refuses the
-        measure the operand could otherwise have resolved to before reaching this
-        point. Qualifying without that guarantee is what turned a reference to
-        measure `unit_count` into `orders.unit_count` -- a column the table does not
-        have, which re-export then wrote back into Cube as `{CUBE}.unit_count`.
+        There used to be a second qualification on top, applied to any result that
+        looked like a bare identifier. It could not reach a column (those are already
+        dotted by then), and what it did reach it corrupted. A measure reference
+        resolved to its metric name, so `type: sum` over `{unit_count}` became
+        `SUM(orders.unit_count)`, naming a column the table has not got -- the report
+        that found this. But the same branch also caught every bare token sqlglot
+        declines to call a column: `sql: NULL` became `SUM(orders.NULL)`, and `TRUE`
+        and `CURRENT_DATE` went the same way. Both are the one mistake -- inferring a
+        column from a token's shape -- so both are fixed by not inferring. A measure
+        reference is now refused upstream by `_static_form`, and anything else
+        `_translate` leaves bare is not a column and is emitted as it stands.
         """
-        translated = self._translate(sql, cname, stack, inline_refs).strip()
-        if is_simple_identifier(translated):
-            return f"{cname}.{translated}"
-        return translated
+        return self._translate(sql, cname, stack, inline_refs).strip()
 
 
 # Measure keys that make the value depend on a grain other than the query's. Cube
