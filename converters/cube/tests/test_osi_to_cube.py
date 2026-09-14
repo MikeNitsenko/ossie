@@ -639,6 +639,98 @@ def test_a_ratio_is_split_into_one_measure_per_aggregate():
         "meta": {"ossie": {"decomposed": True}}}
 
 
+def test_an_aggregate_with_no_cube_type_is_still_placed_on_the_cube_it_reads():
+    """Decomposition placed only the aggregates a hardcoded name list mentioned, while
+    the fan-out classifier recognized any aggregate node -- so `STDDEV(users.ltv)` was
+    inlined on `orders` and corrected for row multiplication there. Cube has no
+    `stddev` measure type, so the part is a calculated measure; what matters is which
+    cube it sits on."""
+    files, _ = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL,
+        _metric("spread", "STDDEV(users.ltv) / SUM(orders.amount)")))
+    users = by_name(parse(files["model/cubes/users.yml"])["cubes"][0]["measures"])
+    assert users["spread_part_1"] == {
+        "name": "spread_part_1", "sql": "STDDEV({CUBE}.ltv)", "type": "number",
+        "meta": {"ossie": {"part_of": "spread"}}, "public": False}
+    assert by_name(_cubes(files)["orders"]["measures"])["spread"]["sql"] == (
+        "{users.spread_part_1} / {CUBE.spread_part_2}")
+
+
+def test_a_windowed_aggregate_is_not_torn_out_of_its_frame():
+    """`SUM(x) OVER (...)` was matched by name and split into its own `sum` measure,
+    leaving `OVER (...)` behind in the glue text -- SQL that means nothing. It stays
+    whole in the public measure now, while the `COUNT` beside it, a real aggregate
+    over another cube, is still lifted onto that cube. One expression, both rules."""
+    files, _ = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL,
+        _metric("m", "SUM(orders.amount) OVER (PARTITION BY orders.id) "
+                     "/ COUNT(DISTINCT users.id)")))
+    users = by_name(parse(files["model/cubes/users.yml"])["cubes"][0]["measures"])
+    assert users["m_part_1"] == {
+        "name": "m_part_1", "type": "count",
+        "meta": {"ossie": {"part_of": "m"}}, "public": False}
+    measures = by_name(_cubes(files)["orders"]["measures"])
+    assert [n for n in measures if "_part_" in n] == []
+    assert measures["m"]["sql"] == (
+        "SUM({CUBE}.amount) OVER (PARTITION BY {CUBE}.id) / {users.m_part_1}")
+
+
+def test_a_lone_aggregate_over_another_cube_is_still_decomposed():
+    """Decomposition additionally required two aggregate spans, which contradicted the
+    rule beside it: one aggregate on the wrong cube is already the thing splitting
+    fixes. `SUM(users.ltv)` names two datasets with `orders.amount`, so the measure
+    lands on the base cube -- and the sum over `users` was corrected on `orders`."""
+    files, _ = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL, _metric("m", "SUM(users.ltv) + orders.amount")))
+    users = by_name(parse(files["model/cubes/users.yml"])["cubes"][0]["measures"])
+    assert users["m_part_1"]["sql"] == "{CUBE}.ltv"
+    assert users["m_part_1"]["type"] == "sum"
+    assert by_name(_cubes(files)["orders"]["measures"])["m"]["sql"] == (
+        "{users.m_part_1} + {CUBE}.amount")
+
+
+def test_an_ordered_set_aggregate_does_not_accumulate_parentheses():
+    """Decomposition now splits an ordered-set aggregate onto its own cube, and import
+    inlines it back. Reading the space before `WITHIN GROUP` as structure wrapped it
+    in parentheses on the way back, so every cycle added another pair and the round
+    trip was no longer a fixed point."""
+    expr = ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY users.ltv) "
+            "/ SUM(orders.amount)")
+    current = expr
+    for _ in range(3):
+        files, _ignored = convert_ossie_to_cube(
+            _ossie(_TWO_DATASETS, _REL, _metric("m", current)))
+        ossie, _ignored = convert_cube_to_ossie(files)
+        current = expr_of(by_name(model_of(ossie)["metrics"])["m"])
+        assert current == expr
+
+
+def test_aggregates_all_on_the_public_cube_stay_one_measure():
+    """The counterpart: dropping the span count must not start splitting a metric that
+    gains nothing from it. Every aggregate here reads the cube the measure sits on, so
+    the correction keys on that cube either way."""
+    files, _ = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL, _metric("m", "MAX(orders.amount) - MIN(orders.amount)")))
+    measures = by_name(_cubes(files)["orders"]["measures"])
+    assert [n for n in measures if "_part_" in n] == []
+    assert measures["m"]["sql"] == "MAX({CUBE}.amount) - MIN({CUBE}.amount)"
+
+
+def test_an_aggregate_that_cannot_be_lifted_is_reported():
+    """`LISTAGG` is an aggregate sqlglot does not model, and an unmodelled call is
+    indistinguishable from a scalar UDF -- so it cannot be lifted onto `users` without
+    risking a measure built from a scalar expression. It stays on `orders`, and the
+    placement Cube will correct on is stated rather than left silent."""
+    _, issues = convert_ossie_to_cube(_ossie(
+        _TWO_DATASETS, _REL,
+        _metric("m", "LISTAGG(users.ltv, ',') || MAX(orders.amount)")))
+    reported = [i for i in issues.of_type(IssueType.APPROXIMATED)
+                if "cannot be lifted" in i.detail]
+    assert len(reported) == 1
+    assert "reading users" in reported[0].detail
+    assert "stays on 'orders'" in reported[0].detail
+
+
 _SAFE_DIVISION = ("CASE WHEN COUNT(DISTINCT users.id) = 0 THEN 0 "
                   "ELSE SUM(orders.amount) / COUNT(DISTINCT users.id) END")
 

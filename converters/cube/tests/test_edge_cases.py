@@ -1572,10 +1572,54 @@ def test_a_reference_inside_a_literal_is_still_translated_on_import():
     ("SUM(a.x)", []),
     # Unparseable input falls back to one opaque measure.
     ("SUM(a.x) /// COUNT(", []),
+    # An aggregate with no Cube measure type is still an aggregate: it has to be
+    # placed on the cube it reads, which is what decomposition is for. Scanning a
+    # list of known names found only the half of the expression that list mentioned.
+    ("STDDEV(a.x) / SUM(b.y)", ["STDDEV(a.x)", "SUM(b.y)"]),
+    ("MEDIAN(a.x) - VARIANCE(b.y)", ["MEDIAN(a.x)", "VARIANCE(b.y)"]),
+    # An ordered-set aggregate carries its operand in the ORDER BY, on the wrapper --
+    # so the span has to cover the WITHIN GROUP or it names no dataset at all.
+    ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY a.x) / SUM(b.y)",
+     ["PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY a.x)", "SUM(b.y)"]),
+    # The WITHIN GROUP syntax proves the call is an aggregate even where the function
+    # itself is one sqlglot does not model.
+    ("LISTAGG(a.x, ',') WITHIN GROUP (ORDER BY a.x) || MAX(b.y)",
+     ["LISTAGG(a.x, ',') WITHIN GROUP (ORDER BY a.x)", "MAX(b.y)"]),
+    # A window function's value depends on its frame, so its inner aggregate is not a
+    # span: lifting `SUM(a.x)` out and leaving `OVER (...)` in the glue text means
+    # nothing. The name list matched it and split it anyway.
+    ("SUM(a.x) OVER (PARTITION BY a.z) / COUNT(b.y)", ["COUNT(b.y)"]),
+    # Scalar calls are not aggregates, however generous the scan for candidates is.
+    ("ROUND(SUM(a.x), 2) + COALESCE(MIN(b.y), 0)", ["SUM(a.x)", "MIN(b.y)"]),
+    ("CAST(a.x AS INT) + LOWER(b.y)", []),
 ])
 def test_aggregate_spans_only_matches_real_calls(expr, expected):
     from ossie_cube.expressions import aggregate_spans
     assert [expr[s:e] for s, e in aggregate_spans(expr)] == expected
+
+
+@pytest.mark.parametrize("expr,expected", [
+    # An unmodelled call reading another dataset: really an aggregate (LISTAGG) or
+    # really a scalar UDF, and nothing can tell which -- so it stays put and is named.
+    ("LISTAGG(users.name, ',') || MAX(orders.x)", {"users"}),
+    ("SUM(orders.amount) * MY_UDF(users.x)", {"users"}),
+    # A window function's aggregate cannot be lifted out of its frame.
+    ("SUM(orders.amount) OVER (PARTITION BY orders.region)", {"orders"}),
+    # Everything decomposition *can* place is not stranded.
+    ("STDDEV(users.ltv) / SUM(orders.amount)", set()),
+    ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY users.ltv)", set()),
+    ("MEDIAN(users.ltv) - ROUND(SUM(orders.amount), 2)", set()),
+    # Unparseable: the caller is already conservative, so nothing is claimed here.
+    ("not valid sql (((", set()),
+])
+def test_unsplittable_aggregates_are_the_classifier_minus_decomposition(expr, expected):
+    """The fan-out classifier recognizes one shape more than decomposition acts on --
+    `Anonymous`, which may be a scalar UDF -- plus the aggregate inside a window
+    function, which cannot leave its frame. That difference is exactly what stays on
+    the wrong cube, and naming it is what turns a silent mis-placement into a stated
+    one."""
+    from ossie_cube.expressions import unsplittable_aggregate_datasets
+    assert unsplittable_aggregate_datasets(expr) == expected
 
 
 @pytest.mark.parametrize("expr,expected", [
@@ -1588,6 +1632,10 @@ def test_aggregate_spans_only_matches_real_calls(expr, expected):
     ("'a + b'", False),                   # operators inside a literal are text
     ("'a b'", False),
     ('"a b"', False),
+    # An ordered-set aggregate is one term, though the space before WITHIN GROUP sits
+    # at depth 0 and reads as structure to the character scan.
+    ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY a.x)", False),
+    ("PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY a.x) / 2", True),
 ])
 def test_has_top_level_operator_ignores_quoted_text(expr, expected):
     from ossie_cube.expressions import has_top_level_operator
