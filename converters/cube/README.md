@@ -546,6 +546,15 @@ were found by asking, including an exported model that failed to compile at all 
 generated view whose `id` members collided. It needs a built Cube checkout and skips
 without one, so it gates local and release runs rather than CI.
 
+The checkout wants to be **Cube 1.7.0 or newer**. That is where `access_policy`
+replaced `role`/`roles` with `group`/`groups` ([cube#11055][ref-cube-11055]), which
+the `access_policy` fixture is written against; an older Cube rejects it. The
+converter itself has no floor, because it carries `access_policy` through verbatim
+rather than reading it -- only the fixture pins a version, and it pins the newer
+spelling so the gate is asking about a model today's Cube would actually accept.
+
+[ref-cube-11055]: https://github.com/cube-js/cube/pull/11055
+
 `tools/interop_matrix.py` checks the other half of the job — whether the Ossie this
 converter emits is any use to the other spokes. It is not part of `pytest`, because
 it drives the other converters' environments rather than this one's. See
