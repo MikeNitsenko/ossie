@@ -29,6 +29,11 @@ enforces one member namespace per cube, so a model can round-trip through Ossie
 byte-for-byte and still be one Cube refuses. It needs a built Cube checkout, named by
 `OSSIE_CUBE_REPO`, and skips when there is none -- so it gates local and release-time
 runs rather than CI.
+
+That checkout should be Cube 1.7.0 or newer: the `access_policy` fixture uses the
+`group` key that replaced `role` in cube-js/cube#11055, and an older Cube rejects it.
+Nothing in the converter depends on the version -- it carries `access_policy` through
+without reading it -- so this is the fixtures' floor, not the code's.
 """
 
 import json

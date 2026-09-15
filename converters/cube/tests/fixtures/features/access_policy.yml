@@ -21,6 +21,11 @@
 # *unquoted* form is normalized to a string (see
 # test_a_bare_yaml_date_is_normalized_rather_than_crashing) because PyYAML resolves it
 # to a date object, which the JSON stash cannot hold.
+#
+# `group` needs Cube 1.7.0 or newer: it replaced `role` in cube-js/cube#11055, and an
+# older Cube refuses this file. The converter reads none of this -- the block rides
+# through verbatim -- so the version floor is the fixture's alone, and it is here so
+# the compile gate asks about a model today's Cube accepts.
 cubes:
   - name: orders
     sql_table: shop.public.orders
@@ -39,7 +44,7 @@ cubes:
       - name: count
         type: count
     access_policy:
-      - role: viewer
+      - group: viewer
         row_level:
           filters:
             - member: status
@@ -51,7 +56,7 @@ cubes:
               values:
                 - '2022-01-01'
                 - "{ securityContext.currentDate }"
-      - role: '*'
+      - group: '*'
         member_level:
           includes: '*'
           excludes:
