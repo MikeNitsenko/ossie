@@ -26,6 +26,7 @@ is pinned here, along with the error paths for malformed input.
 """
 
 import pytest
+import yaml
 from _util import by_name, expr_of, model_of, parse, parse_files, stash_of
 
 from ossie_cube import (
@@ -2974,3 +2975,203 @@ def test_filter_splitting_ignores_and_inside_a_backtick_identifier():
               "THEN amount END")
     assert unfold_filtered_operand(folded) == (
         "amount", ["`status AND state` = 1", "amount > 0"])
+
+
+# --- review pass 3: stale stash records, and inputs the stash protocol has to
+# --- survive rather than trust ---------------------------------------------------
+
+def _renamed_dataset(files, old, new):
+    """Import `files`, then rename a dataset the way a user editing the Ossie would.
+
+    What the stash records is a *cube* name, written by the import that produced the
+    document. Nothing re-reads it afterwards, so a rename is how a stale record gets
+    into a model that is otherwise perfectly valid.
+    """
+    ossie, _ = convert_cube_to_ossie(files)
+    doc = yaml.safe_load(ossie)
+    model = doc["semantic_model"][0]
+    for dataset in model["datasets"]:
+        if dataset["name"] == old:
+            dataset["name"] = new
+    for rel in model.get("relationships") or []:
+        for end in ("from", "to"):
+            if rel[end] == old:
+                rel[end] = new
+    for metric in model.get("metrics") or []:
+        for dialect in metric["expression"]["dialects"]:
+            dialect["expression"] = dialect["expression"].replace(
+                f"{old}.", f"{new}.")
+    return yaml.safe_dump(doc, sort_keys=False)
+
+
+_CROSS_CUBE_MEASURE = _files(m=(
+    "cubes:\n"
+    "  - name: orders\n"
+    "    sql_table: public.orders\n"
+    "    joins:\n"
+    "      - name: users\n"
+    "        sql: \"{CUBE}.id = {users}.order_id\"\n"
+    "        relationship: one_to_many\n"
+    "    dimensions:\n"
+    "      - name: id\n        sql: id\n        type: number\n"
+    "        primary_key: true\n"
+    "    measures:\n"
+    "      - name: ltv_sum\n        sql: \"{users}.ltv\"\n        type: sum\n"
+    "  - name: users\n"
+    "    sql_table: public.users\n"
+    "    dimensions:\n"
+    "      - name: order_id\n        sql: order_id\n        type: number\n"
+    "        primary_key: true\n"
+))
+
+
+def test_a_metric_pinned_to_a_renamed_cube_is_rehomed_not_dropped():
+    """The stash pins this measure to `orders` because its expression reads only
+    `users`. Nothing validated that name against the model, so after a rename the
+    measure was filed under a cube that is never built, and the per-dataset loop --
+    which collects by current name -- never found it. The metric vanished in silence."""
+    ossie = _renamed_dataset(_CROSS_CUBE_MEASURE, "orders", "orders2")
+    back, issues = convert_ossie_to_cube(ossie)
+    cubes = by_name([c for t in back.values() for c in parse(t).get("cubes", [])])
+    assert [m["name"] for m in cubes["users"].get("measures", [])] == ["ltv_sum"]
+    assert [i.element_name
+            for i in issues.of_type(IssueType.APPROXIMATED)
+            if "no longer has" in i.detail] == ["metric 'ltv_sum'"]
+
+
+def test_a_join_declared_on_a_renamed_cube_does_not_keep_its_cardinality():
+    """`declared_on` restores which side a one_to_many was written on. Compared raw
+    against the current cube names it simply failed to match after a rename, so the
+    orientation fell back to Ossie's own while the recorded `one_to_many` was kept --
+    the one combination that is wrong both ways, reversing which side multiplies.
+    Both records name the same vanished cube, so neither survives."""
+    ossie = _renamed_dataset(_CROSS_CUBE_MEASURE, "orders", "orders2")
+    back, issues = convert_ossie_to_cube(ossie)
+    cubes = by_name([c for t in back.values() for c in parse(t).get("cubes", [])])
+    # Ossie's `from` is the many side, so its own reading is many_to_one on `users`.
+    assert cubes["users"]["joins"] == [{
+        "name": "orders2", "sql": "{CUBE}.order_id = {orders2}.id",
+        "relationship": "many_to_one"}]
+    assert "joins" not in cubes["orders2"]
+    assert [i.element_name
+            for i in issues.of_type(IssueType.APPROXIMATED)
+            if "declared on cube" in i.detail] == ["relationship 'users_to_orders'"]
+
+
+@pytest.mark.parametrize("data,expected", [
+    ("not json at all", "malformed JSON"),
+    ("[1, 2, 3]", "'data' of list"),
+    ('"a string"', "'data' of str"),
+    ("null", "'data' of NoneType"),
+])
+def test_a_malformed_cube_stash_is_an_error_not_a_traceback(data, expected):
+    """The stash is input like any other -- hand-authored, or written by a tool that
+    picked the same vendor id. Parsing it bare turned malformed JSON into a
+    JSONDecodeError and a valid non-object into an AttributeError, neither of which
+    the CLI catches, so both reached the user as a traceback."""
+    from ossie_cube._common import read_stash
+    obj = {"custom_extensions": [{"vendor_name": "CUBE", "data": data}]}
+    with pytest.raises(ConversionError, match=expected):
+        read_stash(obj)
+
+
+_PART_OF_MEASURES = (
+    "cubes:\n"
+    "  - name: orders\n"
+    "    sql_table: public.orders\n"
+    "    dimensions:\n"
+    "      - name: id\n        sql: id\n        type: number\n"
+    "        primary_key: true\n"
+    "    measures:\n"
+)
+
+
+def test_a_hand_authored_part_of_is_not_mistaken_for_a_generated_part():
+    """`meta.ossie.part_of` marks a measure a previous export split out of a composite
+    metric, and those are skipped because the public measure inlines back to the whole
+    expression. The key alone was taken as proof, so a measure carrying it for any
+    other reason was dropped with no metric and no issue, and could not be recovered
+    on re-export. It now has to name a measure this model actually decomposed."""
+    files = _files(orders=_PART_OF_MEASURES + (
+        "      - name: kept\n        sql: amount\n        type: sum\n"
+        "      - name: mine\n        sql: amount\n        type: sum\n"
+        "        meta:\n          ossie:\n            part_of: another_tool\n"))
+    ossie, _ = convert_cube_to_ossie(files)
+    assert sorted(m["name"] for m in model_of(ossie)["metrics"]) == ["kept", "mine"]
+
+
+def test_a_real_generated_part_is_still_skipped():
+    """The counterpart: corroboration must not start emitting a metric for the halves
+    of a decomposition, whose public measure already carries the whole expression."""
+    files = _files(orders=_PART_OF_MEASURES + (
+        "      - name: pub\n        sql: \"{CUBE.pub_part_1}\"\n        type: number\n"
+        "        meta:\n          ossie:\n            decomposed: true\n"
+        "      - name: pub_part_1\n        sql: amount\n        type: sum\n"
+        "        public: false\n"
+        "        meta:\n          ossie:\n            part_of: pub\n"))
+    ossie, _ = convert_cube_to_ossie(files)
+    assert [m["name"] for m in model_of(ossie)["metrics"]] == ["pub"]
+
+
+def test_a_geo_dimension_is_not_read_as_the_primary_key():
+    """The flag scan named any dimension marked `primary_key: true`, but a geo one
+    splits into `<name>_latitude`/`<name>_longitude` and leaves no field of its own
+    name -- so the Ossie key pointed at nothing, and export then synthesized a
+    dimension reading a column of that name, which the table has not got. The flag
+    itself rides on the geo stash, so the key comes back where it belongs."""
+    files = _files(orders=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    dimensions:\n"
+        "      - name: loc\n        type: geo\n        primary_key: true\n"
+        "        latitude:\n          sql: \"{CUBE}.lat\"\n"
+        "        longitude:\n          sql: \"{CUBE}.lon\"\n"))
+    ossie, back, _ = _roundtrip(files)
+    dataset = by_name(model_of(ossie)["datasets"])["orders"]
+    assert "primary_key" not in dataset
+    assert [f["name"] for f in dataset["fields"]] == ["loc_latitude", "loc_longitude"]
+    assert parse_files(back) == parse_files(files)
+
+
+def test_a_recorded_empty_primary_key_is_not_read_as_absent():
+    """An export records `primary_key: []` to say the Ossie model declared no key.
+    Tested for truthiness that read as "nothing recorded", and the dimension flags put
+    a key back that the document had deliberately left out."""
+    files = _files(orders=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    meta:\n      ossie:\n        primary_key: []\n"
+        "    dimensions:\n"
+        "      - name: id\n        sql: id\n        type: number\n"
+        "        primary_key: true\n"))
+    ossie, _ = convert_cube_to_ossie(files)
+    assert "primary_key" not in by_name(model_of(ossie)["datasets"])["orders"]
+
+
+def test_a_geo_dimension_carries_its_labels_onto_both_halves():
+    """Every other dimension kind gets `title`/`description`/`meta.ai_context` as
+    native Ossie fields; the geo path built its two fields itself and swept them into
+    the stash instead. The round trip was fine and every reader of the Ossie document
+    -- which is every other spoke -- saw an unlabelled coordinate pair."""
+    files = _files(orders=(
+        "cubes:\n"
+        "  - name: orders\n"
+        "    sql_table: public.orders\n"
+        "    dimensions:\n"
+        "      - name: loc\n        type: geo\n"
+        "        title: Delivery point\n"
+        "        description: Where it went\n"
+        "        meta:\n          ai_context: the drop-off\n"
+        "          custom_thing: keep me\n"
+        "        latitude:\n          sql: \"{CUBE}.lat\"\n"
+        "        longitude:\n          sql: \"{CUBE}.lon\"\n"))
+    ossie, back, _ = _roundtrip(files)
+    for half in ("loc_latitude", "loc_longitude"):
+        field = by_name(by_name(model_of(ossie)["datasets"])["orders"]["fields"])[half]
+        assert field["label"] == "Delivery point"
+        assert field["description"] == "Where it went"
+        assert field["ai_context"] == {"instructions": "the drop-off"}
+    # Native now, so not duplicated in the stash -- and still byte-identical back.
+    assert parse_files(back) == parse_files(files)

@@ -65,10 +65,13 @@ CUBE_DIR = "model/cubes"
 VIEW_DIR = "model/views"
 
 # A valid Cube identifier -- `identifierRegex` in Cube's CubeValidator.
-_CUBE_NAME_RE = re.compile(r"^[_a-zA-Z][_a-zA-Z0-9]*$")
+# `\Z`, not `$`: Python's `$` also matches just before a single trailing newline, so
+# `orders\n` passed as a valid identifier and reached a file path through `cube_file`,
+# and `total\n` spliced a raw newline into generated expression text.
+_CUBE_NAME_RE = re.compile(r"\A[_a-zA-Z][_a-zA-Z0-9]*\Z")
 
 # A bare SQL identifier (single column reference), e.g. `c_name`.
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_IDENTIFIER_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 
 # One identifier: a regular one, or an ANSI double-quoted one (with `""` escaping an
 # embedded quote).
@@ -275,10 +278,26 @@ def read_stash(obj):
     """Return the CUBE stash dict on an Ossie object, or {} if absent.
 
     The `_v` version marker is stripped from the returned dict.
+
+    The entry is input like any other -- hand-authored, or written by some other
+    tool that picked the same vendor id -- so its `data` is validated rather than
+    trusted. It used to be parsed bare, which turned malformed JSON into a
+    `JSONDecodeError` and a valid non-object (a list, a string, `null`) into an
+    `AttributeError` on the next line; neither is caught by the CLI, so both
+    surfaced as a traceback instead of a message.
     """
     for ext in (obj or {}).get("custom_extensions") or []:
         if ext.get("vendor_name") == VENDOR:
-            data = json.loads(ext.get("data") or "{}")
+            try:
+                data = json.loads(ext.get("data") or "{}")
+            except ValueError as exc:
+                raise ConversionError(
+                    f"custom_extensions entry for vendor '{VENDOR}' has malformed "
+                    f"JSON in 'data': {exc}") from exc
+            if not isinstance(data, dict):
+                raise ConversionError(
+                    f"custom_extensions entry for vendor '{VENDOR}' has a "
+                    f"'data' of {type(data).__name__}, expected a JSON object")
             data.pop("_v", None)
             return data
     return {}

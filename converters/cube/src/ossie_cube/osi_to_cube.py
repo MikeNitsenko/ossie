@@ -265,6 +265,22 @@ def _build_meta(ai_context, stashed_meta, parked_extra):
     return meta
 
 
+def _apply_member_labels(member, field):
+    """Put an Ossie field's label/description/ai_context back on a Cube member.
+
+    Only the merged `geo` dimension needs this as a step of its own: every other
+    dimension is assembled in one place that already does it. Its `meta` is merged
+    rather than replaced, since the stashed host may carry Cube-side keys of its own.
+    """
+    if field.get("label"):
+        member["title"] = escape_braces_for_cube(field["label"])
+    if field.get("description"):
+        member["description"] = escape_braces_for_cube(field["description"])
+    meta = _build_meta(field.get("ai_context"), member.get("meta"), {})
+    if meta:
+        member["meta"] = meta
+
+
 def _ordered(obj, order):
     """Re-key a dict so the well-known Cube keys come first, in their documented
     order, with anything restored from the stash following."""
@@ -732,6 +748,12 @@ def _build_dimensions(ds, plan, tables, dialect, issues):
                                               f"dataset '{ds_name}'")
             if "host" in geo:
                 slot["host"] = geo["host"]
+            if geo["part"] == "latitude":
+                # The half the host rides on is also where the merged dimension's
+                # label, description and ai_context are read back from: import puts
+                # them on both halves natively rather than in the stash, so one of
+                # the two has to be nominated.
+                slot["labels"] = field
             continue
 
         expr, used = pick_expression(field.get("expression"), dialect)
@@ -821,6 +843,7 @@ def _build_dimensions(ds, plan, tables, dialect, issues):
                "longitude": {"sql": slot["longitude"]}}
         for key, value in (slot.get("host") or {}).items():
             dim[key] = value
+        _apply_member_labels(dim, slot.get("labels") or {})
         built[base] = dim
 
     # A name in `order` with nothing built is a field dropped for want of a usable
@@ -946,6 +969,21 @@ def _build_joins(relationships, cube_names, issues):
         to_cube = cube_names[rel["to"]]
         declared_on = stash.get("declared_on")
         relationship = stash.get("relationship", "many_to_one")
+        if declared_on is not None and declared_on not in (from_cube, to_cube):
+            # The stash names a cube this relationship no longer touches -- the dataset
+            # was renamed after import. Orientation then quietly fell back to the
+            # default while the recorded cardinality was kept, which is the one
+            # combination that is wrong both ways: a one_to_many came back declared on
+            # the other side, reversing which side multiplies. Both records describe
+            # the same vanished cube, so neither is usable.
+            issues.add(
+                IssueType.APPROXIMATED, f"relationship '{rname}'",
+                f"the stash records this join as declared on cube '{declared_on}', "
+                f"which is neither '{from_cube}' nor '{to_cube}' -- the dataset was "
+                f"renamed since import, so the recorded orientation and "
+                f"'{relationship}' cardinality are both dropped for Ossie's own "
+                f"many-to-one reading")
+            declared_on, relationship = None, "many_to_one"
 
         if declared_on == to_cube:
             # The import flipped a one_to_many (or kept a one_to_one) declared on
@@ -1003,7 +1041,6 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
     """Group Ossie metrics into per-cube `measures` lists."""
     name = model.get("name", "<unnamed>")
     base_cache = []
-
     def resolve_base():
         if not base_cache:
             base_cache.append(cube_names[_pick_base_cube(
@@ -1037,7 +1074,7 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
                 field_owners.setdefault(key, set()).add(cname)
 
     refs = _MetricReferences(model, dialect, tables, resolve_base, name,
-                             field_owners)
+                             field_owners, set(cube_names.values()), issues)
 
     measures_by_cube = {}
     for metric in (model.get("metrics") or []):
@@ -1056,7 +1093,7 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
             measure = dict(stash["measure"])
             measure["name"] = mname
             _apply_measure_metadata(metric, measure, stash)
-            target = stash.get("cube") or resolve_base()
+            target = refs.cube_of_metric(mname_raw)
             _place(measures_by_cube, target, measure, name)
             continue
 
@@ -1088,7 +1125,7 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
                        f"Cube measure; the metric is dropped with them")
             continue
         referenced = tables.datasets_in(expr)
-        target = stash.get("cube") or refs.cube_of_metric(mname_raw)
+        target = refs.cube_of_metric(mname_raw)
 
         if len(referenced) > 1:
             # Cube resolves a cross-cube member reference by adding an implicit join,
@@ -1148,6 +1185,27 @@ _METRIC_STASH_CONSUMED = frozenset(
     {"cube", "measure", "sql", "filters", "type", "name", "title", "meta"})
 
 
+def _pinned_cube(stash, metric_name, known_cubes, issues):
+    """The cube a metric's stash pins its measure to, when that cube still exists.
+
+    The recorded name is a *cube* name written by the import that produced this
+    document, and nothing re-checked it against the model as it now stands. A dataset
+    renamed since then left the measure keyed to a cube no longer built, while the
+    per-dataset loop collects buckets by current name -- so the metric vanished from
+    the output with nothing said. Dropping the stale pin falls back to the derivation
+    an unpinned metric already uses, which puts the measure on a cube that exists.
+    """
+    cube = stash.get("cube")
+    if cube is None or cube in known_cubes:
+        return cube
+    issues.add(
+        IssueType.APPROXIMATED, f"metric '{metric_name}'",
+        f"the stash pins this metric to cube '{cube}', which this model no longer "
+        f"has -- the dataset was renamed since import, so the owning cube is derived "
+        f"from the expression instead")
+    return None
+
+
 class _MetricReferences:
     """The namespace a model-level expression's bare identifiers resolve in.
 
@@ -1174,7 +1232,7 @@ class _MetricReferences:
     """
 
     def __init__(self, model, dialect, tables, resolve_base, model_name,
-                 field_owners):
+                 field_owners, known_cubes, issues):
         self._tables = tables
         self._resolve_base = resolve_base
         self._model_name = model_name
@@ -1196,7 +1254,7 @@ class _MetricReferences:
                 "name": raw,
                 "measure": stash.get("name") or sanitize_name(
                     raw, f"metric '{raw}'", set()),
-                "stash_cube": stash.get("cube"),
+                "stash_cube": _pinned_cube(stash, raw, known_cubes, issues),
                 # None means no usable dialect; a verbatim-restored measure has no
                 # expression to scan but still exists to be referenced.
                 "expr": expr,
