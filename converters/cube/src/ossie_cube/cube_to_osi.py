@@ -634,13 +634,29 @@ def _primary_key_of(cube, cname):
     the dimension name then put that name in the rebuilt `COUNT(DISTINCT ...)` too, so the
     metric referenced a member that does not exist on the Ossie side.
     """
-    recorded = parked_of(cube.get("meta")).get("primary_key")
-    if recorded:
-        return [str(column) for column in recorded]
+    parked = parked_of(cube.get("meta"))
+    if "primary_key" in parked:
+        # Presence, not truthiness: a recorded `[]` is an export saying the Ossie
+        # model declared no key, and reading it as "absent" reinstated one from the
+        # dimension flags -- reintroducing a key the model had deliberately dropped.
+        return [str(column) for column in parked["primary_key"] or []]
     return [require_str(dim, "name", f"cube '{cname}': dimension")
             for dim in _as_named_list(cube.get("dimensions"),
                                       f"cube '{cname}' dimensions")
-            if dim.get("primary_key")]
+            if dim.get("primary_key") and _yields_a_same_named_field(dim)]
+
+
+def _yields_a_same_named_field(dim):
+    """True when this dimension becomes an Ossie field of its own name.
+
+    A `geo` dimension splits into `<name>_latitude`/`<name>_longitude`, and `switch`
+    and `sub_query` ones are parked whole -- so none of the three leaves a field the
+    primary key could name. Naming one anyway produced a key pointing at nothing:
+    export then synthesized a dimension for the missing column, giving Cube a second
+    `primary_key: true` reading a column the table has not got.
+    """
+    return not (snake(dim.get("type") or "") in ("geo", "switch")
+                or dim.get("sub_query"))
 
 
 def _convert_cube(cname, cube, plain, extra_joins, extra_measures, issues):
@@ -851,13 +867,7 @@ def _finish_dimension_field(cname, dname, dim, field, stash, issues):
     # fact, and handing back a dimension would change what it means.
     if not parked.get("no_role"):
         field["dimension"] = {"is_time": True} if dtype == "time" else {}
-    if dim.get("title"):
-        field["label"] = unescape_braces_from_cube(dim["title"])
-    if dim.get("description"):
-        field["description"] = unescape_braces_from_cube(dim["description"])
-    ai = _ai_context_from_meta(dim.get("meta"))
-    if ai:
-        field["ai_context"] = ai
+    _apply_dimension_labels(field, dim)
 
     for key, value in dim.items():
         skey = snake(key)
@@ -872,6 +882,27 @@ def _finish_dimension_field(cname, dname, dim, field, stash, issues):
     # first -- the same ordering datasets use.
     _restore_parked_extensions(field, dim.get("meta"))
     return field
+
+
+def _apply_dimension_labels(field, dim):
+    """Copy a dimension's human-facing metadata onto the Ossie field natively.
+
+    Shared so a `geo` dimension gets it too. That path builds its two fields itself
+    and so had none of this: `title`, `description` and `meta.ai_context` reached the
+    stash and nothing else, which round-tripped back to Cube perfectly well and left
+    anyone reading the Ossie document -- every other spoke -- with a coordinate pair
+    carrying no label, unlike every other field kind.
+
+    Both halves take the whole geo dimension's metadata, since the two of them are
+    what it became.
+    """
+    if dim.get("title"):
+        field["label"] = unescape_braces_from_cube(dim["title"])
+    if dim.get("description"):
+        field["description"] = unescape_braces_from_cube(dim["description"])
+    ai = _ai_context_from_meta(dim.get("meta"))
+    if ai:
+        field["ai_context"] = ai
 
 
 def _case_expression(cname, dname, case):
@@ -937,10 +968,20 @@ def _convert_geo_dimension(cname, dname, dim, issues):
     issues.add(IssueType.GEO_DIMENSION_SPLIT, f"{cname}.{dname}",
                f"split into '{dname}_latitude' and '{dname}_longitude'; an Ossie "
                f"field holds a single expression")
+    # The keys an Ossie field carries natively are excluded, exactly as
+    # `_finish_dimension_field` excludes `_DIM_NATIVE_KEYS`: keeping a second copy in
+    # the stash would make the two disagree the moment one is edited, and export
+    # rebuilds them from the fields. `primary_key` is *not* native here -- a merged
+    # geo dimension leaves no field of its own name for an Ossie key to point at, so
+    # the flag rides on the host and comes back untouched.
     host_extras = {
         snake(k): v for k, v in dim.items()
-        if snake(k) not in ("name", "type", "latitude", "longitude")
+        if snake(k) not in ("name", "type", "latitude", "longitude",
+                            "title", "description", "meta")
     }
+    leftover_meta = _meta_without_ai_context(dim.get("meta"))
+    if leftover_meta:
+        host_extras["meta"] = leftover_meta
     out = []
     for part in ("latitude", "longitude"):
         coordinate = dim.get(part)
@@ -970,6 +1011,7 @@ def _convert_geo_dimension(cname, dname, dim, issues):
             # directly, so it needs the role block spelled out here too.
             "dimension": {},
         }
+        _apply_dimension_labels(field, dim)
         geo = {"of": dname, "part": part}
         # The half's SQL rides along only when the field's expression would not
         # regenerate it: a raw column of the own cube (`{CUBE}.lat`, `lat`) is
@@ -1592,10 +1634,26 @@ def _windowing_key(measure):
     return None
 
 
-def _is_generated_part(measure):
+def _is_generated_part(measure, decomposed):
     """True for a `public: false` measure a previous export created to hold one
-    aggregate of a composite metric (marked `meta.ossie.part_of`)."""
-    return bool(((measure.get("meta") or {}).get("ossie") or {}).get("part_of"))
+    aggregate of a composite metric (marked `meta.ossie.part_of`).
+
+    `decomposed` is the set of measure names in this model that were split that way,
+    and `part_of` has to name one of them. The key alone is not proof: a measure
+    written by hand, or by another tool reusing `meta.ossie`, was taken for a
+    generated part and dropped with no metric and no issue, unrecoverable on
+    re-export. Uncorroborated, it converts like any other measure.
+    """
+    part_of = ((measure.get("meta") or {}).get("ossie") or {}).get("part_of")
+    return bool(part_of) and part_of in decomposed
+
+
+def _decomposed_measure_names(cubes):
+    """Names of the public measures a previous export split into parts."""
+    return {m["name"] for cname, cube in cubes.items()
+            for m in _as_named_list(cube.get("measures"),
+                                    f"cube '{cname}' measures")
+            if m.get("name") and parked_of(m.get("meta")).get("decomposed")}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1732,6 +1790,7 @@ def _convert_measures(cubes, pk_by_cube, plain_by_cube, fanned_out, relationship
     """
     resolver = _MeasureResolver(cubes, pk_by_cube, issues)
     member_names = _member_names_of(cubes)
+    decomposed = _decomposed_measure_names(cubes)
 
     # Which measures produce a metric at all, decided before any expression is
     # emitted: a measure reference resolves to the referenced measure's *metric
@@ -1748,12 +1807,12 @@ def _convert_measures(cubes, pk_by_cube, plain_by_cube, fanned_out, relationship
     # spec's own validator misses, since its duplicate check compares exact strings.
     counts = {}
     for key, measure in resolver.measures().items():
-        if converts[key] and not _is_generated_part(measure):
+        if converts[key] and not _is_generated_part(measure, decomposed):
             norm = normalize_identifier(key[1])
             counts[norm] = counts.get(norm, 0) + 1
     metric_names = {}
     for key, measure in resolver.measures().items():
-        if not converts[key] or _is_generated_part(measure):
+        if not converts[key] or _is_generated_part(measure, decomposed):
             continue
         cname, mname = key
         # The emitted name keeps its original spelling; only the *comparison* is
@@ -1795,7 +1854,7 @@ def _convert_measures(cubes, pk_by_cube, plain_by_cube, fanned_out, relationship
                 _as_named_list(cube.get("measures"),
                                f"cube '{cname}' measures")):
             mname = measure["name"]
-            if _is_generated_part(measure):
+            if _is_generated_part(measure, decomposed):
                 # Emitted by a previous export to split a composite metric across
                 # cubes. It has no Ossie metric of its own -- the public measure's
                 # references inline back to the whole expression -- and export
