@@ -146,6 +146,21 @@ def test_source_becomes_sql_table_or_sql():
     assert "sql_table" not in cube
 
 
+@pytest.mark.parametrize("source, kind", [
+    ("/* note */ SELECT * FROM raw.orders", "sql"),
+    ("-- note\nSELECT * FROM raw.orders", "sql"),
+    ("(SELECT * FROM raw.orders)", "sql"),
+    ("/* a */ -- b\n ( WITH x AS (SELECT 1) SELECT * FROM x)", "sql"),
+    ("/* select */ raw.orders", "sql_table"),
+    ("selections.orders", "sql_table"),
+])
+def test_a_query_is_recognized_past_leading_comments_and_parentheses(source, kind):
+    """A query is still a query behind a comment or a parenthesis; emitted as
+    `sql_table` Cube would interpolate it into FROM and fail to compile."""
+    from ossie_cube._common import parse_source
+    assert parse_source(source, "orders") == (kind, source)
+
+
 def test_every_dimension_declares_a_type():
     """Cube's schema requires `type` on every dimension, so the converter always
     emits one -- falling back to `string` with an issue when Ossie carries none."""

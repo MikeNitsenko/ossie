@@ -1080,6 +1080,9 @@ def uncollided_view_name(vname, cube_names):
 
 # --- source ---------------------------------------------------------------------
 
+_LEADING_NOISE_RE = re.compile(r"^(?:\s+|--[^\n]*|/\*.*?\*/|\()*", re.S)
+
+
 def parse_source(source, dataset_name):
     """Classify an Ossie dataset `source` for placement on a Cube cube.
 
@@ -1092,7 +1095,10 @@ def parse_source(source, dataset_name):
     if not source or not str(source).strip():
         raise ConversionError(f"Dataset '{dataset_name}': missing/empty 'source'")
     s = str(source).strip()
-    if re.match(r"(?i)(select|with)\b", s):
+    # Leading comments and parentheses are not part of the query's first keyword:
+    # `/* note */ SELECT ...` and `(SELECT ...)` are subqueries too, and would break
+    # Cube's compile if emitted as a table reference. The source itself is kept as is.
+    if re.match(r"(?i)(select|with)\b", _LEADING_NOISE_RE.sub("", s)):
         return ("sql", s)
     return ("sql_table", s)
 
