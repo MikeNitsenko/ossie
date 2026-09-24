@@ -954,7 +954,7 @@ def ossie_expr_to_cube_sql(expr, own_cube, tables):
         # Ossie regular identifiers are case-insensitive, so the reference is matched
         # in normalized form; what is *emitted* is the canonical Cube spelling, since
         # Cube's own member lookup is case-sensitive.
-        head_keys, name_keys = match_keys(head), match_keys(name)
+        head_keys = match_keys(head)
         # Resolve the dataset first, then decide which branch applies. Comparing the
         # written spelling against `own_cube` directly was wrong once the two could
         # differ: dataset `Order Items` becomes cube `order_items`, so a reference to

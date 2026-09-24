@@ -32,7 +32,6 @@ Usage (CLI):
 """
 
 import dataclasses
-import re
 
 from ._common import (
     AGG_TO_RESULT_DATATYPE,
