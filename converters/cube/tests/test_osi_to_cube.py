@@ -1368,3 +1368,33 @@ def test_any_warehouse_dialect_alone_is_enough_to_convert(dialect):
     assert cube["measures"] == [{"name": "n", "type": "count"}]
     assert any(dialect in i.detail
                for i in issues.of_type(IssueType.APPROXIMATED))
+
+
+def test_ossie_sql_converts_and_keeps_its_label():
+    """OSSIE_SQL_2026 is Ossie's portable SQL, so it is used as readily as ANSI_SQL --
+    no fallback issue -- and its label survives the round trip."""
+    ds = (
+        "  - name: orders\n"
+        "    source: shop.public.orders\n"
+        "    primary_key:\n    - id\n"
+        "    fields:\n"
+        "    - name: id\n      expression:\n        dialects:\n"
+        "        - dialect: OSSIE_SQL_2026\n          expression: id\n"
+        "      datatype: Integer\n"
+    )
+    ossie = _ossie(ds)
+    files, issues = convert_ossie_to_cube(ossie)
+    assert [d["name"] for d in _cubes(files)["orders"]["dimensions"]] == ["id"]
+    assert not issues.of_type(IssueType.APPROXIMATED)
+    back = model_of(convert_cube_to_ossie(files)[0])
+    assert back["datasets"][0]["fields"][0]["expression"] == {
+        "dialects": [{"dialect": "OSSIE_SQL_2026", "expression": "id"}]}
+
+
+def test_ansi_sql_is_preferred_over_ossie_sql():
+    from ossie_cube._common import pick_expression
+    expression = {"dialects": [
+        {"dialect": "OSSIE_SQL_2026", "expression": "a"},
+        {"dialect": "ANSI_SQL", "expression": "b"}]}
+    assert pick_expression(expression) == ("b", "ANSI_SQL")
+    assert pick_expression(expression, "OSSIE_SQL_2026") == ("a", "OSSIE_SQL_2026")

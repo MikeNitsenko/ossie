@@ -49,6 +49,9 @@ DEFAULT_MODEL_NAME = "cube_model"
 # the Ossie dialect enum. Import emits ANSI_SQL; export prefers ANSI_SQL and lets
 # the caller prepend a warehouse dialect the actual data source would accept.
 DIALECT_ANSI = "ANSI_SQL"
+# Ossie's own portable SQL expression language (see core-spec/expression_language.md).
+# ANSI-compatible, so it is the next choice after ANSI_SQL itself.
+DIALECT_OSSIE_SQL = "OSSIE_SQL_2026"
 
 # Dialects whose expressions are SQL a warehouse executes, so Cube can pass them
 # straight to the data source. The spec's enum also contains MDX, TABLEAU and MAQL,
@@ -361,7 +364,8 @@ def pick_expression(ossie_expression, preferred=None):
 
     Preference order: the caller-chosen warehouse dialect (Cube passes SQL through to
     the data source, so e.g. SNOWFLAKE SQL is valid on a Snowflake-backed Cube model),
-    then ANSI_SQL, then the first dialect on offer that is warehouse SQL.
+    then ANSI_SQL, then OSSIE_SQL_2026, then the first dialect on offer that is
+    warehouse SQL.
 
     The last step matters for real interop. Converters commonly emit their own dialect
     and no ANSI: everything from the Databricks converter is `DATABRICKS`. Requiring
@@ -382,7 +386,7 @@ def pick_expression(ossie_expression, preferred=None):
                 for d in (ossie_expression or {}).get("dialects") or []
                 if d.get("expression") is not None]
     by_dialect = dict(dialects)
-    for candidate in (preferred, DIALECT_ANSI):
+    for candidate in (preferred, DIALECT_ANSI, DIALECT_OSSIE_SQL):
         if candidate and candidate in by_dialect:
             return _checked_expression(by_dialect[candidate]), candidate
     for dialect, expr in dialects:

@@ -41,6 +41,7 @@ from ._common import (
     DEFAULT_DATATYPE_FOR_CUBE_TYPE,
     DEFAULT_MODEL_NAME,
     DIALECT_ANSI,
+    DIALECT_OSSIE_SQL,
     OSSIE_VERSION,
     ConversionError,
     classify_metric_expression,
@@ -602,7 +603,7 @@ def _report_dialect_fallback(issues, scope, used, preferred):
     converts, and Cube passes SQL through to the data source, so it is right whenever the
     Cube model reads that warehouse. Pass `--dialect` to make the choice explicit.
     """
-    if used in (None, DIALECT_ANSI, preferred):
+    if used in (None, DIALECT_ANSI, DIALECT_OSSIE_SQL, preferred):
         return
     issues.add(IssueType.APPROXIMATED, scope,
                f"no ANSI_SQL expression; used the first warehouse dialect on offer "

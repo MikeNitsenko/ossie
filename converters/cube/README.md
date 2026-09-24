@@ -187,9 +187,11 @@ stays a raw quoted column.
 **Expression dialects**: Cube SQL is the SQL of the model's data source, and the
 Ossie dialect enum has no `CUBE` entry -- so import emits `ANSI_SQL`, and export
 prefers `ANSI_SQL` with `--dialect` prepending a warehouse dialect (e.g.
-`SNOWFLAKE` for a Snowflake-backed Cube model).
+`SNOWFLAKE` for a Snowflake-backed Cube model). `OSSIE_SQL_2026`, Ossie's portable
+SQL, is ANSI-compatible and taken next; its label is kept in `meta.ossie.dialect` so
+re-import hands it back unchanged.
 
-Failing both, export falls back to the **first** dialect on offer that is warehouse SQL
+Failing those, export falls back to the **first** dialect on offer that is warehouse SQL
 (`SNOWFLAKE`, `DATABRICKS`, `BIGQUERY`), records which one in `meta.ossie.dialect`, and
 reports it. The record matters: without it re-import would label vendor-specific SQL as
 `ANSI_SQL` and mislead the next converter.
