@@ -236,7 +236,7 @@ def convert_cube_to_ossie(files, model_name=None, view=None, strict_fanout=False
     # restored after the stash is written, so the CUBE entry stays first.
     _restore_parked_extensions(model, mapped_view.get("meta"))
 
-    return dump_yaml({"version": OSSIE_VERSION, "semantic_model": [model]}), issues
+    return dump_yaml({"version": OSSIE_VERSION, **model}), issues
 
 
 # --- collection -----------------------------------------------------------------

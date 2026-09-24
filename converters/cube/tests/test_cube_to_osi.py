@@ -44,7 +44,7 @@ def test_version_and_single_model(fixture_a):
 
     doc = parse(out)
     assert doc["version"] == OSSIE_VERSION
-    assert len(doc["semantic_model"]) == 1
+    assert doc["name"] == "sales"
 
 
 def test_mapped_view_supplies_model_identity(model_a):

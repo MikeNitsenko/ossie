@@ -107,16 +107,8 @@ def convert_ossie_to_cube(ossie_yaml_str, dialect=None, base_cube=None):
     if version != OSSIE_VERSION:
         raise ConversionError(
             f"Unsupported Ossie version '{version}'. Supported: {OSSIE_VERSION}")
-    models = root.get("semantic_model")
-    if not isinstance(models, list) or not models:
-        raise ConversionError("'semantic_model' must be a non-empty list")
-
-    issues = IssueLog()
-    if len(models) > 1:
-        issues.add(IssueType.DROPPED_NO_CUBE_EQUIVALENT, "model",
-                   f"{len(models)} semantic models found; only the first is "
-                   f"converted and the rest are not preserved anywhere")
-    return _convert_model(models[0], dialect, base_cube, issues)
+    # One semantic model per document, its fields directly at the root.
+    return _convert_model(root, dialect, base_cube, IssueLog())
 
 
 def _convert_model(model, dialect, base_cube, issues):

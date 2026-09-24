@@ -336,53 +336,53 @@ def build_ossie_model(rnd):
     dim_names = [f"dim_{i}" for i in range(rnd.count(1, 2))]
     fact = "fact"
 
-    lines = [f"version: {OSSIE_VERSION}", "semantic_model:", "- name: shop"]
+    lines = [f"version: {OSSIE_VERSION}", "name: shop"]
     if rnd.chance(0.5):
-        lines.append(f"  description: {_yaml_text(rnd.text())}")
-    lines.append("  datasets:")
+        lines.append(f"description: {_yaml_text(rnd.text())}")
+    lines.append("datasets:")
 
     fields_by_dataset = {}
     for name in [fact] + dim_names:
         fields = _ossie_fields(rnd, name, dim_names if name == fact else ())
         fields_by_dataset[name] = fields
-        lines.append(f"  - name: {name}")
-        lines.append(f"    source: shop.public.{name}")
+        lines.append(f"- name: {name}")
+        lines.append(f"  source: shop.public.{name}")
         # Either way of declaring the key. `unique_keys` is what a source format with no
         # primary-key concept produces -- a Databricks metric view has none -- and export
         # has to promote it, because Cube demands a key on any cube with a join. One of
         # the two is always present: with neither, Cube rightly refuses the model.
         if rnd.chance(0.7):
-            lines.append("    primary_key:")
-            lines.append("    - id")
+            lines.append("  primary_key:")
+            lines.append("  - id")
         else:
-            lines.append("    unique_keys:")
-            lines.append("    - - id")
+            lines.append("  unique_keys:")
+            lines.append("  - - id")
         if rnd.chance(0.4):
-            lines.append(f"    description: {_yaml_text(rnd.text())}")
-        lines.append("    fields:")
+            lines.append(f"  description: {_yaml_text(rnd.text())}")
+        lines.append("  fields:")
         for fname, expr, datatype, forms, has_role in fields:
-            lines.append(f"    - name: {fname}")
-            lines.append("      expression:")
-            lines.append("        dialects:")
+            lines.append(f"  - name: {fname}")
+            lines.append("    expression:")
+            lines.append("      dialects:")
             for dialect, text in forms:
-                lines.append(f"        - dialect: {dialect}")
-                lines.append(f"          expression: {text}")
-            lines.append(f"      datatype: {datatype}")
+                lines.append(f"      - dialect: {dialect}")
+                lines.append(f"        expression: {text}")
+            lines.append(f"    datatype: {datatype}")
             if has_role:
-                lines.append("      dimension:")
-                lines.append("        is_time: false")
+                lines.append("    dimension:")
+                lines.append("      is_time: false")
 
     # Every dimension dataset is reachable from the fact, so a generated view has an
     # unambiguous root and cross-dataset metrics have a join path.
-    lines.append("  relationships:")
+    lines.append("relationships:")
     for d in dim_names:
-        lines.append(f"  - name: {fact}_to_{d}")
-        lines.append(f"    from: {fact}")
-        lines.append(f"    to: {d}")
-        lines.append(f"    from_columns: [{d}_id]")
-        lines.append("    to_columns: [id]")
+        lines.append(f"- name: {fact}_to_{d}")
+        lines.append(f"  from: {fact}")
+        lines.append(f"  to: {d}")
+        lines.append(f"  from_columns: [{d}_id]")
+        lines.append("  to_columns: [id]")
 
-    lines.append("  metrics:")
+    lines.append("metrics:")
     for text in _ossie_metrics(rnd, fact, dim_names, fields_by_dataset):
         lines.extend(text)
     return "\n".join(lines) + "\n"
@@ -442,12 +442,12 @@ def _ossie_metrics(rnd, fact, dim_names, fields_by_dataset):
     out = []
 
     def block(name, expression):
-        entry = [f"  - name: {name}", "    expression:", "      dialects:"]
+        entry = [f"- name: {name}", "  expression:", "    dialects:"]
         for dialect, text in _dialect_forms(rnd, expression):
-            entry.append(f"      - dialect: {dialect}")
-            entry.append(f"        expression: {text}")
+            entry.append(f"    - dialect: {dialect}")
+            entry.append(f"      expression: {text}")
         if rnd.chance(0.3):
-            entry.insert(1, f"    description: {_yaml_text(rnd.text())}")
+            entry.insert(1, f"  description: {_yaml_text(rnd.text())}")
         out.append(entry)
 
     # One aggregate over a field of the fact, sometimes referenced in another case.
@@ -518,8 +518,8 @@ def _normalize_refs(expression):
 
 def check_ossie_model(ossie_yaml):
     files, back = assert_ossie_first_roundtrip(ossie_yaml)
-    original = load_yaml(ossie_yaml)["semantic_model"][0]
-    returned = load_yaml(back)["semantic_model"][0]
+    original = load_yaml(ossie_yaml)
+    returned = load_yaml(back)
 
     # Metrics must come back with the same names, expressions *and* dialects. A composite
     # one is split into hidden measures on the way out and inlined back on the way in,

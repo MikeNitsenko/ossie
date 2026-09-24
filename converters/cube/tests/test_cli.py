@@ -70,7 +70,7 @@ def test_a_model_directory_converts(tmp_path, capsys):
         "cubes|orders.yml": _ORDERS, "views|sales.yml": _VIEW})
     assert main(["import", "-i", str(model)]) == 0
     doc = parse(capsys.readouterr().out)
-    assert doc["semantic_model"][0]["name"] == "sales"
+    assert doc["name"] == "sales"
 
 
 def test_a_single_file_converts(tmp_path, capsys):
@@ -80,7 +80,7 @@ def test_a_single_file_converts(tmp_path, capsys):
     path.write_text(_ORDERS)
     assert main(["import", "-i", str(path)]) == 0
     doc = parse(capsys.readouterr().out)
-    assert [d["name"] for d in doc["semantic_model"][0]["datasets"]] == ["orders"]
+    assert [d["name"] for d in doc["datasets"]] == ["orders"]
 
 
 def test_several_paths_merge_into_one_model(tmp_path, capsys):
@@ -92,7 +92,7 @@ def test_several_paths_merge_into_one_model(tmp_path, capsys):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
     assert main(["import", "-i", str(a), str(b)]) == 0
-    model = parse(capsys.readouterr().out)["semantic_model"][0]
+    model = parse(capsys.readouterr().out)
     assert model["name"] == "sales"          # the view was picked up
     assert [d["name"] for d in model["datasets"]] == ["orders"]
 
@@ -119,7 +119,7 @@ def test_mixing_a_directory_and_a_file_works(tmp_path, capsys):
     extra = tmp_path / "extra.yml"
     extra.write_text(_VIEW)
     assert main(["import", "-i", str(model), str(extra)]) == 0
-    assert parse(capsys.readouterr().out)["semantic_model"][0]["name"] == "sales"
+    assert parse(capsys.readouterr().out)["name"] == "sales"
 
 
 def test_overlapping_inputs_are_reported(tmp_path, capsys):
@@ -198,7 +198,7 @@ def test_node_modules_and_dotfiles_are_skipped(tmp_path, capsys):
     })
     assert main(["import", "-i", str(model)]) == 0
     doc = parse(capsys.readouterr().out)
-    assert [d["name"] for d in doc["semantic_model"][0]["datasets"]] == ["orders"]
+    assert [d["name"] for d in doc["datasets"]] == ["orders"]
 
 
 # --- output and exit codes ------------------------------------------------------
@@ -208,7 +208,7 @@ def test_output_goes_to_a_file_when_asked(tmp_path, capsys):
     out = tmp_path / "model.yaml"
     assert main(["import", "-i", str(model), "-o", str(out)]) == 0
     assert capsys.readouterr().out == ""
-    assert parse(out.read_text())["semantic_model"][0]["datasets"]
+    assert parse(out.read_text())["datasets"]
 
 
 def test_issues_go_to_stderr_so_stdout_stays_pipeable(tmp_path, capsys):
@@ -256,7 +256,7 @@ def test_fanout_warns_by_default_and_the_flag_exits_nonzero(tmp_path, capsys):
     assert main(["import", "-i", str(model)]) == 0
     captured = capsys.readouterr()
     assert "FANOUT_UNSAFE_METRIC" in captured.err
-    assert parse(captured.out)["semantic_model"][0]["metrics"]
+    assert parse(captured.out)["metrics"]
 
     assert main(["import", "-i", str(model), "--strict-fanout"]) == 1
     assert "FANOUT_UNSAFE_METRIC" in capsys.readouterr().err
@@ -269,11 +269,11 @@ def test_view_and_name_flags_take_effect(tmp_path, capsys):
         "views|b.yml": "views:\n  - name: b\n    description: B\n",
     })
     assert main(["import", "-i", str(model), "--view", "b"]) == 0
-    assert parse(capsys.readouterr().out)["semantic_model"][0]["description"] == "B"
+    assert parse(capsys.readouterr().out)["description"] == "B"
 
     assert main(["import", "-i", str(model), "--view", "b",
                  "--name", "custom"]) == 0
-    assert parse(capsys.readouterr().out)["semantic_model"][0]["name"] == "custom"
+    assert parse(capsys.readouterr().out)["name"] == "custom"
 
     assert main(["import", "-i", str(model), "--view", "ghost"]) == 1
     assert "not found" in capsys.readouterr().err

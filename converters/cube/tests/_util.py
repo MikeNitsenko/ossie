@@ -91,10 +91,8 @@ def parse_files(files):
 
 
 def model_of(ossie_yaml):
-    """The sole semantic model of an Ossie document."""
-    doc = parse(ossie_yaml)
-    assert len(doc["semantic_model"]) == 1
-    return doc["semantic_model"][0]
+    """The semantic model of an Ossie document: its root mapping."""
+    return parse(ossie_yaml)
 
 
 def by_name(items):

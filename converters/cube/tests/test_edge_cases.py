@@ -418,17 +418,16 @@ def test_count_star_is_not_emitted_as_a_bare_cube_count():
     the importer refuses -- export generating what its own import rejects."""
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: public.orders\n"
-        "  metrics:\n"
-        "  - name: n\n"
-        "    expression:\n"
-        "      dialects:\n"
-        "      - dialect: ANSI_SQL\n"
-        "        expression: COUNT(*)\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: public.orders\n"
+        "metrics:\n"
+        "- name: n\n"
+        "  expression:\n"
+        "    dialects:\n"
+        "    - dialect: ANSI_SQL\n"
+        "      expression: COUNT(*)\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     measure = parse(files["model/cubes/orders.yml"])["cubes"][0]["measures"][0]
@@ -445,36 +444,35 @@ def test_field_and_metric_foreign_extensions_survive_the_round_trip():
     parked and then silently dropped on re-import."""
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: public.orders\n"
-        "    fields:\n"
-        "    - name: status\n"
-        "      expression:\n"
-        "        dialects:\n"
-        "        - dialect: ANSI_SQL\n"
-        "          expression: status\n"
-        "      datatype: String\n"
-        "      custom_extensions:\n"
-        "      - vendor_name: SNOWFLAKE\n"
-        "        data: '{\"collation\": \"en\"}'\n"
-        "    - name: amount\n"
-        "      expression:\n"
-        "        dialects:\n"
-        "        - dialect: ANSI_SQL\n"
-        "          expression: amount\n"
-        "      datatype: Decimal\n"
-        "  metrics:\n"
-        "  - name: total\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: public.orders\n"
+        "  fields:\n"
+        "  - name: status\n"
         "    expression:\n"
         "      dialects:\n"
         "      - dialect: ANSI_SQL\n"
-        "        expression: SUM(orders.amount)\n"
+        "        expression: status\n"
+        "    datatype: String\n"
         "    custom_extensions:\n"
-        "    - vendor_name: DBT\n"
-        "      data: '{\"model\": \"fct_orders\"}'\n"
+        "    - vendor_name: SNOWFLAKE\n"
+        "      data: '{\"collation\": \"en\"}'\n"
+        "  - name: amount\n"
+        "    expression:\n"
+        "      dialects:\n"
+        "      - dialect: ANSI_SQL\n"
+        "        expression: amount\n"
+        "    datatype: Decimal\n"
+        "metrics:\n"
+        "- name: total\n"
+        "  expression:\n"
+        "    dialects:\n"
+        "    - dialect: ANSI_SQL\n"
+        "      expression: SUM(orders.amount)\n"
+        "  custom_extensions:\n"
+        "  - vendor_name: DBT\n"
+        "    data: '{\"model\": \"fct_orders\"}'\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     ossie2, _ = convert_cube_to_ossie(files)
@@ -869,17 +867,16 @@ def test_join_clause_that_is_not_a_single_equality_is_preserved():
 def test_metric_without_a_usable_dialect_is_dropped_with_an_issue():
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: public.orders\n"
-        "  metrics:\n"
-        "  - name: m\n"
-        "    expression:\n"
-        "      dialects:\n"
-        "      - dialect: MAQL\n"
-        "        expression: SELECT SUM(x)\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: public.orders\n"
+        "metrics:\n"
+        "- name: m\n"
+        "  expression:\n"
+        "    dialects:\n"
+        "    - dialect: MAQL\n"
+        "      expression: SELECT SUM(x)\n"
     )
     files, issues = convert_ossie_to_cube(ossie)
     assert "measures" not in parse(files["model/cubes/orders.yml"])["cubes"][0]
@@ -1121,38 +1118,37 @@ def test_geo_dimension_extras_survive_the_split_and_merge():
 
 _GEO_MODEL = (
     "version: 0.2.0.dev0\n"
-    "semantic_model:\n"
-    "- name: shop\n"
-    "  datasets:\n"
-    "  - name: users\n"
-    "    source: public.users\n"
-    "    fields:\n"
-    "    - name: home_latitude\n"
-    "      expression:\n"
-    "        dialects:\n"
-    "        - dialect: ANSI_SQL\n"
-    "          expression: lat\n"
-    "      datatype: Float\n"
-    "      custom_extensions:\n"
-    "      - vendor_name: CUBE\n"
-    "        data: '{\"_v\": 1, \"geo\": {\"of\": \"home\", \"part\": \"latitude\","
-    " \"sql\": \"{CUBE}.lat\"}}'\n"
-    "    - name: home_longitude\n"
-    "      expression:\n"
-    "        dialects:\n"
-    "        - dialect: ANSI_SQL\n"
-    "          expression: lon\n"
-    "      datatype: Float\n"
-    "      custom_extensions:\n"
-    "      - vendor_name: CUBE\n"
-    "        data: '{\"_v\": 1, \"geo\": {\"of\": \"home\", \"part\": \"longitude\","
-    " \"sql\": \"{CUBE}.lon\"}}'\n"
-    "  metrics:\n"
-    "  - name: avg_lat\n"
+    "name: shop\n"
+    "datasets:\n"
+    "- name: users\n"
+    "  source: public.users\n"
+    "  fields:\n"
+    "  - name: home_latitude\n"
     "    expression:\n"
     "      dialects:\n"
     "      - dialect: ANSI_SQL\n"
-    "        expression: AVG(users.home_latitude)\n"
+    "        expression: lat\n"
+    "    datatype: Float\n"
+    "    custom_extensions:\n"
+    "    - vendor_name: CUBE\n"
+    "      data: '{\"_v\": 1, \"geo\": {\"of\": \"home\", \"part\": \"latitude\","
+    " \"sql\": \"{CUBE}.lat\"}}'\n"
+    "  - name: home_longitude\n"
+    "    expression:\n"
+    "      dialects:\n"
+    "      - dialect: ANSI_SQL\n"
+    "        expression: lon\n"
+    "    datatype: Float\n"
+    "    custom_extensions:\n"
+    "    - vendor_name: CUBE\n"
+    "      data: '{\"_v\": 1, \"geo\": {\"of\": \"home\", \"part\": \"longitude\","
+    " \"sql\": \"{CUBE}.lon\"}}'\n"
+    "metrics:\n"
+    "- name: avg_lat\n"
+    "  expression:\n"
+    "    dialects:\n"
+    "    - dialect: ANSI_SQL\n"
+    "      expression: AVG(users.home_latitude)\n"
 )
 
 
@@ -1174,17 +1170,17 @@ def test_a_metric_referencing_a_geo_half_inlines_its_sql():
 def _two_cube_geo_model(expression):
     """`_GEO_MODEL` plus an `orders.amount` field, and `expression` as the metric."""
     return _GEO_MODEL.replace(
-        "  - name: users\n", "  - name: orders\n    source: public.orders\n"
-        "    fields:\n"
-        "    - name: amount\n"
-        "      expression:\n"
-        "        dialects:\n"
-        "        - dialect: ANSI_SQL\n"
-        "          expression: amount\n"
-        "      datatype: Decimal\n"
-        "  - name: users\n", 1
-    ).replace("        expression: AVG(users.home_latitude)\n",
-              f"        expression: {expression}\n")
+        "- name: users\n", "- name: orders\n  source: public.orders\n"
+        "  fields:\n"
+        "  - name: amount\n"
+        "    expression:\n"
+        "      dialects:\n"
+        "      - dialect: ANSI_SQL\n"
+        "        expression: amount\n"
+        "    datatype: Decimal\n"
+        "- name: users\n", 1
+    ).replace("      expression: AVG(users.home_latitude)\n",
+              f"      expression: {expression}\n")
 
 
 def test_a_geo_half_reference_is_requalified_when_it_crosses_cubes():
@@ -1238,12 +1234,11 @@ def _geo_stash(part, of="home"):
 def _ossie_fields(*specs):
     """Build an Ossie model from (field name, expression, geo part or None) specs."""
     out = ("version: 0.2.0.dev0\n"
-           "semantic_model:\n"
-           "- name: shop\n"
-           "  datasets:\n"
-           "  - name: users\n"
-           "    source: public.users\n"
-           "    fields:\n")
+           "name: shop\n"
+           "datasets:\n"
+           "- name: users\n"
+           "  source: public.users\n"
+           "  fields:\n")
     for fname, expr, part in specs:
         out += (f"    - name: {fname}\n"
                 "      expression:\n"
@@ -1261,26 +1256,25 @@ def _ossie_fields(*specs):
 def _ossie_pk(primary_key, *specs):
     """An Ossie model with a primary_key and (name, expression, geo part) fields."""
     out = ("version: 0.2.0.dev0\n"
-           "semantic_model:\n"
-           "- name: shop\n"
-           "  datasets:\n"
-           "  - name: orders\n"
-           "    source: public.orders\n"
-           "    primary_key:\n")
+           "name: shop\n"
+           "datasets:\n"
+           "- name: orders\n"
+           "  source: public.orders\n"
+           "  primary_key:\n")
     for col in primary_key:
-        out += f"    - {col}\n"
-    out += "    fields:\n"
+        out += f"  - {col}\n"
+    out += "  fields:\n"
     for fname, expr, part in specs:
-        out += (f"    - name: {fname}\n"
-                "      expression:\n"
-                "        dialects:\n"
-                "        - dialect: ANSI_SQL\n"
-                f"          expression: {expr}\n"
-                "      datatype: String\n")
+        out += (f"  - name: {fname}\n"
+                "    expression:\n"
+                "      dialects:\n"
+                "      - dialect: ANSI_SQL\n"
+                f"        expression: {expr}\n"
+                "    datatype: String\n")
         if part:
-            out += ("      custom_extensions:\n"
-                    "      - vendor_name: CUBE\n"
-                    f"        data: '{_geo_stash(part, of=fname.rsplit('_', 1)[0])}'\n")
+            out += ("    custom_extensions:\n"
+                    "    - vendor_name: CUBE\n"
+                    f"      data: '{_geo_stash(part, of=fname.rsplit('_', 1)[0])}'\n")
     return out
 
 
@@ -1447,15 +1441,14 @@ def test_geo_dimension_missing_a_half_is_rejected():
 def test_ai_context_examples_reach_cube_as_prose_and_park_structurally():
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  ai_context:\n"
-        "    instructions: Sales model.\n"
-        "    examples:\n"
-        "    - What were sales last month?\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: public.orders\n"
+        "name: shop\n"
+        "ai_context:\n"
+        "  instructions: Sales model.\n"
+        "  examples:\n"
+        "  - What were sales last month?\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: public.orders\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     meta = parse(files["model/views/shop.yml"])["views"][0]["meta"]
@@ -1474,12 +1467,11 @@ def test_a_plain_string_ai_context_survives_as_a_string():
     as {'instructions': ...}, so the original scalar has to be parked to survive."""
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: public.orders\n"
-        "    ai_context: orders, purchases, sales\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: public.orders\n"
+        "  ai_context: orders, purchases, sales\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     ossie2, _ = convert_cube_to_ossie(files)
@@ -1519,7 +1511,7 @@ def test_foreign_extensions_with_no_mapped_view_are_refused_not_dropped():
     extensions are read back. So this is refused rather than silently losing them."""
     ossie, _ = convert_cube_to_ossie(_TWO_VIEWS)
     doc = parse(ossie)
-    doc["semantic_model"][0].setdefault("custom_extensions", []).append(
+    doc.setdefault("custom_extensions", []).append(
         {"vendor_name": "SNOWFLAKE", "data": '{"warehouse": "ANALYTICS_WH"}'})
     with pytest.raises(ConversionError, match="SNOWFLAKE"):
         convert_ossie_to_cube(dump_yaml(doc))
@@ -1530,7 +1522,7 @@ def test_foreign_extensions_survive_once_a_view_is_mapped():
     the extensions have a home again."""
     ossie, _ = convert_cube_to_ossie(_TWO_VIEWS, view="b")
     doc = parse(ossie)
-    doc["semantic_model"][0].setdefault("custom_extensions", []).append(
+    doc.setdefault("custom_extensions", []).append(
         {"vendor_name": "SNOWFLAKE", "data": '{"warehouse": "ANALYTICS_WH"}'})
     files, _ = convert_ossie_to_cube(dump_yaml(doc))
     parked = parse(files["model/views/b.yml"])["views"][0]["meta"]["ossie"]
@@ -1582,7 +1574,7 @@ def test_the_mapped_view_in_a_shared_file_still_carries_model_metadata():
 
     model["description"] = "edited"
     files, _ = convert_ossie_to_cube(dump_yaml({
-        "version": "0.2.0.dev0", "semantic_model": [model]}))
+        "version": "0.2.0.dev0", **model}))
     views = by_name(parse(files["model/all.yml"])["views"])
     assert views["alpha"]["description"] == "edited"
     assert views["beta"]["description"] == "B"
@@ -1684,18 +1676,17 @@ def test_unknown_dimension_type_is_rejected():
 def test_unknown_ossie_datatype_is_rejected():
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: t\n"
-        "    fields:\n"
-        "    - name: f\n"
-        "      expression:\n"
-        "        dialects:\n"
-        "        - dialect: ANSI_SQL\n"
-        "          expression: f\n"
-        "      datatype: Quaternion\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: t\n"
+        "  fields:\n"
+        "  - name: f\n"
+        "    expression:\n"
+        "      dialects:\n"
+        "      - dialect: ANSI_SQL\n"
+        "        expression: f\n"
+        "    datatype: Quaternion\n"
     )
     with pytest.raises(ConversionError, match="unknown datatype"):
         convert_ossie_to_cube(ossie)
@@ -1704,33 +1695,12 @@ def test_unknown_ossie_datatype_is_rejected():
 def test_dataset_without_a_source_is_rejected_on_export():
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
     )
     with pytest.raises(ConversionError, match="missing/empty 'source'"):
         convert_ossie_to_cube(ossie)
-
-
-def test_several_semantic_models_convert_the_first_with_an_issue():
-    ossie = (
-        "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: first\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: t\n"
-        "- name: second\n"
-        "  datasets:\n"
-        "  - name: users\n"
-        "    source: t\n"
-    )
-    files, issues = convert_ossie_to_cube(ossie)
-    assert set(files) == {"model/cubes/orders.yml", "model/views/first.yml"}
-    # The other models are not preserved anywhere, so this is a drop.
-    dropped = issues.of_type(IssueType.DROPPED_NO_CUBE_EQUIVALENT)
-    assert any("only the first is converted" in i.detail for i in dropped)
 
 
 # --- string literals ------------------------------------------------------------
@@ -2039,21 +2009,20 @@ def test_a_computed_primary_key_stays_on_its_own_dimension():
 def test_a_brace_in_free_text_is_escaped():
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  description: 'sales in {region}'\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: a.b.orders\n"
-        "    description: 'holds {json} notes'\n"
-        "    fields:\n"
-        "    - name: id\n"
-        "      expression:\n"
-        "        dialects:\n"
-        "        - dialect: ANSI_SQL\n"
-        "          expression: id\n"
-        "      datatype: Integer\n"
-        "      description: 'the {id}'\n"
+        "name: shop\n"
+        "description: 'sales in {region}'\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: a.b.orders\n"
+        "  description: 'holds {json} notes'\n"
+        "  fields:\n"
+        "  - name: id\n"
+        "    expression:\n"
+        "      dialects:\n"
+        "      - dialect: ANSI_SQL\n"
+        "        expression: id\n"
+        "    datatype: Integer\n"
+        "    description: 'the {id}'\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     cube = parse(files["model/cubes/orders.yml"])["cubes"][0]
@@ -2073,21 +2042,20 @@ def test_a_parked_foreign_extension_is_escaped_and_restored():
     contains braces. Parking it unescaped made every such model fail to compile."""
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: a.b.orders\n"
-        "    fields:\n"
-        "    - name: id\n"
-        "      expression:\n"
-        "        dialects:\n"
-        "        - dialect: ANSI_SQL\n"
-        "          expression: id\n"
-        "      datatype: Integer\n"
-        "    custom_extensions:\n"
-        "    - vendor_name: DBT\n"
-        "      data: '{\"project\": \"x\"}'\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: a.b.orders\n"
+        "  fields:\n"
+        "  - name: id\n"
+        "    expression:\n"
+        "      dialects:\n"
+        "      - dialect: ANSI_SQL\n"
+        "        expression: id\n"
+        "    datatype: Integer\n"
+        "  custom_extensions:\n"
+        "  - vendor_name: DBT\n"
+        "    data: '{\"project\": \"x\"}'\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     parked = parse(files["model/cubes/orders.yml"])["cubes"][0][
@@ -2187,20 +2155,19 @@ def test_identifiers_match_case_insensitively(reference):
     member's own expression, so the metric silently summed the wrong thing."""
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: a.b.orders\n"
-        "    fields:\n"
-        "    - name: amount\n"
-        "      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: amount * 2\n"
-        "      datatype: Decimal\n"
-        "  metrics:\n"
-        "  - name: total\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: a.b.orders\n"
+        "  fields:\n"
+        "  - name: amount\n"
         "    expression:\n      dialects:\n"
-        f"      - dialect: ANSI_SQL\n        expression: SUM({reference})\n"
+        "      - dialect: ANSI_SQL\n        expression: amount * 2\n"
+        "    datatype: Decimal\n"
+        "metrics:\n"
+        "- name: total\n"
+        "  expression:\n    dialects:\n"
+        f"    - dialect: ANSI_SQL\n      expression: SUM({reference})\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     measure = parse(files["model/cubes/orders.yml"])["cubes"][0]["measures"][0]
@@ -2230,35 +2197,34 @@ def test_generated_part_names_do_not_depend_on_metric_order(order):
     def metric(name):
         expr = ("SUM(orders.amount) / COUNT(DISTINCT users.id)"
                 if name == "ratio" else "SUM(orders.amount)")
-        return (f"  - name: {name}\n    expression:\n      dialects:\n"
-                f"      - dialect: ANSI_SQL\n        expression: {expr}\n")
+        return (f"- name: {name}\n  expression:\n    dialects:\n"
+                f"    - dialect: ANSI_SQL\n      expression: {expr}\n")
 
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: a.b.orders\n"
-        "    primary_key:\n    - id\n"
-        "    fields:\n"
-        "    - name: id\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: id\n"
-        "      datatype: Integer\n"
-        "    - name: amount\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: amount\n"
-        "      datatype: Decimal\n"
-        "  - name: users\n"
-        "    source: a.b.users\n"
-        "    primary_key:\n    - id\n"
-        "    fields:\n"
-        "    - name: id\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: id\n"
-        "      datatype: Integer\n"
-        "  relationships:\n"
-        "  - name: r\n    from: orders\n    to: users\n"
-        "    from_columns: [id]\n    to_columns: [id]\n"
-        "  metrics:\n" + "".join(metric(n) for n in order)
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: a.b.orders\n"
+        "  primary_key:\n  - id\n"
+        "  fields:\n"
+        "  - name: id\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: id\n"
+        "    datatype: Integer\n"
+        "  - name: amount\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: amount\n"
+        "    datatype: Decimal\n"
+        "- name: users\n"
+        "  source: a.b.users\n"
+        "  primary_key:\n  - id\n"
+        "  fields:\n"
+        "  - name: id\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: id\n"
+        "    datatype: Integer\n"
+        "relationships:\n"
+        "- name: r\n  from: orders\n  to: users\n"
+        "  from_columns: [id]\n  to_columns: [id]\n"
+        "metrics:\n" + "".join(metric(n) for n in order)
     )
     files, _ = convert_ossie_to_cube(ossie)
     names = [m["name"] for m in
@@ -2279,18 +2245,17 @@ def test_a_stashed_extra_file_may_not_overwrite_generated_output():
              "extra_files": {"model/cubes/orders.yml": "# hijacked\n"}}
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: a.b.orders\n"
-        "    fields:\n"
-        "    - name: id\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: id\n"
-        "      datatype: Integer\n"
-        "  custom_extensions:\n"
-        "  - vendor_name: CUBE\n"
-        f"    data: '{json.dumps(stash)}'\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: a.b.orders\n"
+        "  fields:\n"
+        "  - name: id\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: id\n"
+        "    datatype: Integer\n"
+        "custom_extensions:\n"
+        "- vendor_name: CUBE\n"
+        f"  data: '{json.dumps(stash)}'\n"
     )
     with pytest.raises(ConversionError, match="would overwrite the generated"):
         convert_ossie_to_cube(ossie)
@@ -2301,16 +2266,15 @@ def test_is_time_without_a_datatype_does_not_acquire_one():
     carried no datatype must not come back asserting DateTime."""
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: events\n"
-        "    source: a.b.events\n"
-        "    fields:\n"
-        "    - name: occurred_at\n"
-        "      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: occurred_at\n"
-        "      dimension:\n        is_time: true\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: events\n"
+        "  source: a.b.events\n"
+        "  fields:\n"
+        "  - name: occurred_at\n"
+        "    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: occurred_at\n"
+        "    dimension:\n      is_time: true\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     dim = parse(files["model/cubes/events.yml"])["cubes"][0]["dimensions"][0]
@@ -2386,28 +2350,27 @@ def test_a_cross_cube_member_gets_the_target_cubes_own_spelling():
     lookup is case-sensitive even though Ossie's identifiers are not."""
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: a.b.orders\n"
-        "    fields:\n"
-        "    - name: amount\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: amount\n"
-        "      datatype: Decimal\n"
-        "  - name: users\n"
-        "    source: a.b.users\n"
-        "    primary_key:\n    - id\n"
-        "    fields:\n"
-        "    - name: id\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: id\n"
-        "      datatype: Integer\n"
-        "  relationships:\n"
-        "  - name: r\n    from: orders\n    to: users\n"
-        "    from_columns: [amount]\n    to_columns: [id]\n"
-        "  metrics:\n"
-        "  - name: m\n    expression:\n      dialects:\n"
-        "      - dialect: ANSI_SQL\n        expression: SUM(orders.amount + USERS.ID)\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: a.b.orders\n"
+        "  fields:\n"
+        "  - name: amount\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: amount\n"
+        "    datatype: Decimal\n"
+        "- name: users\n"
+        "  source: a.b.users\n"
+        "  primary_key:\n  - id\n"
+        "  fields:\n"
+        "  - name: id\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: id\n"
+        "    datatype: Integer\n"
+        "relationships:\n"
+        "- name: r\n  from: orders\n  to: users\n"
+        "  from_columns: [amount]\n  to_columns: [id]\n"
+        "metrics:\n"
+        "- name: m\n  expression:\n    dialects:\n"
+        "    - dialect: ANSI_SQL\n      expression: SUM(orders.amount + USERS.ID)\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     assert parse(files["model/cubes/orders.yml"])["cubes"][0][
@@ -2500,36 +2463,35 @@ def test_a_generated_part_name_avoids_a_stashed_member():
              "cube_extras": {"segments": [{"name": "ratio_part_1", "sql": "x"}]}}
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: a.b.orders\n"
-        "    primary_key:\n    - id\n"
-        "    fields:\n"
-        "    - name: id\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: id\n"
-        "      datatype: Integer\n"
-        "    - name: amount\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: amount\n"
-        "      datatype: Decimal\n"
-        "    custom_extensions:\n"
-        "    - vendor_name: CUBE\n"
-        f"      data: '{json.dumps(stash)}'\n"
-        "  - name: users\n"
-        "    source: a.b.users\n"
-        "    primary_key:\n    - id\n"
-        "    fields:\n"
-        "    - name: id\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: id\n"
-        "      datatype: Integer\n"
-        "  relationships:\n"
-        "  - name: r\n    from: orders\n    to: users\n"
-        "    from_columns: [id]\n    to_columns: [id]\n"
-        "  metrics:\n"
-        "  - name: ratio\n    expression:\n      dialects:\n"
-        "      - dialect: ANSI_SQL\n"
-        "        expression: SUM(orders.amount) / COUNT(DISTINCT users.id)\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: a.b.orders\n"
+        "  primary_key:\n  - id\n"
+        "  fields:\n"
+        "  - name: id\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: id\n"
+        "    datatype: Integer\n"
+        "  - name: amount\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: amount\n"
+        "    datatype: Decimal\n"
+        "  custom_extensions:\n"
+        "  - vendor_name: CUBE\n"
+        f"    data: '{json.dumps(stash)}'\n"
+        "- name: users\n"
+        "  source: a.b.users\n"
+        "  primary_key:\n  - id\n"
+        "  fields:\n"
+        "  - name: id\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: id\n"
+        "    datatype: Integer\n"
+        "relationships:\n"
+        "- name: r\n  from: orders\n  to: users\n"
+        "  from_columns: [id]\n  to_columns: [id]\n"
+        "metrics:\n"
+        "- name: ratio\n  expression:\n    dialects:\n"
+        "    - dialect: ANSI_SQL\n"
+        "      expression: SUM(orders.amount) / COUNT(DISTINCT users.id)\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     cube = parse(files["model/cubes/orders.yml"])["cubes"][0]
@@ -2935,20 +2897,19 @@ def test_a_stashed_join_without_a_primary_key_is_reported_on_export():
 def test_a_falsy_stashed_measure_sql_is_restored_verbatim():
     ossie = (
         "version: 0.2.0.dev0\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: orders\n"
-        "    source: public.orders\n"
-        "  metrics:\n"
-        "  - name: zero\n"
-        "    expression:\n"
-        "      dialects:\n"
-        "      - dialect: ANSI_SQL\n"
-        "        expression: '0'\n"
-        "    custom_extensions:\n"
-        "    - vendor_name: CUBE\n"
-        "      data: '{\"_v\": 1, \"sql\": 0, \"type\": \"number\"}'\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: orders\n"
+        "  source: public.orders\n"
+        "metrics:\n"
+        "- name: zero\n"
+        "  expression:\n"
+        "    dialects:\n"
+        "    - dialect: ANSI_SQL\n"
+        "      expression: '0'\n"
+        "  custom_extensions:\n"
+        "  - vendor_name: CUBE\n"
+        "    data: '{\"_v\": 1, \"sql\": 0, \"type\": \"number\"}'\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     measure = parse(files["model/cubes/orders.yml"])["cubes"][0]["measures"][0]
@@ -2989,7 +2950,7 @@ def _renamed_dataset(files, old, new):
     """
     ossie, _ = convert_cube_to_ossie(files)
     doc = yaml.safe_load(ossie)
-    model = doc["semantic_model"][0]
+    model = doc
     for dataset in model["datasets"]:
         if dataset["name"] == old:
             dataset["name"] = new

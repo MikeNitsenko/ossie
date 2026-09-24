@@ -17,6 +17,8 @@
 
 """Apache Ossie semantic model -> Cube data model."""
 
+from textwrap import dedent
+
 import pytest
 from _util import by_name, expr_of, model_of, parse
 
@@ -30,14 +32,15 @@ from ossie_cube._common import OSSIE_VERSION
 
 
 def _ossie(datasets, relationships="", metrics="", model_extra=""):
+    # The fragments are written indented as model keys; the model is the document
+    # root, so they are dedented onto it.
     return (f"version: {OSSIE_VERSION}\n"
-            "semantic_model:\n"
-            "- name: shop\n"
-            f"{model_extra}"
-            "  datasets:\n"
-            f"{datasets}"
-            f"{relationships}"
-            f"{metrics}")
+            "name: shop\n"
+            + dedent(model_extra)
+            + "datasets:\n"
+            + dedent(datasets)
+            + dedent(relationships)
+            + dedent(metrics))
 
 
 _ORDERS = (
@@ -74,13 +77,13 @@ def test_emits_one_file_per_cube_plus_a_view():
 
 def test_version_is_enforced():
     with pytest.raises(ConversionError, match="Unsupported Ossie version"):
-        convert_ossie_to_cube("version: 9.9.9\nsemantic_model: []\n")
+        convert_ossie_to_cube("version: 9.9.9\nname: shop\ndatasets: []\n")
 
 
 def test_model_without_datasets_is_rejected():
     with pytest.raises(ConversionError, match="no datasets"):
         convert_ossie_to_cube(
-            f"version: {OSSIE_VERSION}\nsemantic_model:\n- name: shop\n  datasets: []\n")
+            f"version: {OSSIE_VERSION}\nname: shop\ndatasets: []\n")
 
 
 def test_relationship_to_unknown_dataset_is_rejected():
@@ -925,9 +928,9 @@ def test_a_stashed_path_may_not_escape_the_output_directory(key, path):
     else:
         stash["cube_files"] = {"orders": path}
     ossie = _ossie(_ORDERS) + (
-        "  custom_extensions:\n"
-        "  - vendor_name: CUBE\n"
-        f"    data: '{json.dumps(stash)}'\n")
+        "custom_extensions:\n"
+        "- vendor_name: CUBE\n"
+        f"  data: '{json.dumps(stash)}'\n")
     with pytest.raises(ConversionError, match="absolute|escapes the output"):
         convert_ossie_to_cube(ossie)
 
@@ -1122,18 +1125,17 @@ def test_a_generated_view_excludes_members_a_prefix_cannot_disambiguate():
 def test_a_reference_may_use_either_the_ossie_or_the_cube_name(reference, expected):
     ossie = (
         f"version: {OSSIE_VERSION}\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: Order Items\n"
-        "    source: shop.public.oi\n"
-        "    fields:\n"
-        "    - name: Gross Amount\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: gross_raw * 2\n"
-        "      datatype: Decimal\n"
-        "  metrics:\n"
-        "  - name: m\n    expression:\n      dialects:\n"
-        f"      - dialect: ANSI_SQL\n        expression: SUM({reference})\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: Order Items\n"
+        "  source: shop.public.oi\n"
+        "  fields:\n"
+        "  - name: Gross Amount\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: gross_raw * 2\n"
+        "    datatype: Decimal\n"
+        "metrics:\n"
+        "- name: m\n  expression:\n    dialects:\n"
+        f"    - dialect: ANSI_SQL\n      expression: SUM({reference})\n"
     )
     files, _ = convert_ossie_to_cube(ossie)
     cube = parse(files["model/cubes/order_items.yml"])["cubes"][0]
@@ -1191,17 +1193,16 @@ def test_a_name_that_must_be_quoted_resolves_when_quoted_exactly():
     way to reference it -- exact-quoted has to resolve or the name is unusable."""
     ossie = (
         f"version: {OSSIE_VERSION}\n"
-        "semantic_model:\n"
-        "- name: shop\n"
-        "  datasets:\n"
-        "  - name: Order Items\n"
-        "    source: shop.public.oi\n"
-        "    fields:\n"
-        "    - name: Gross Amount\n      expression:\n        dialects:\n"
-        "        - dialect: ANSI_SQL\n          expression: gross_raw * 2\n"
-        "      datatype: Decimal\n"
-        "  metrics:\n"
-        "  - name: m\n    expression:\n      dialects:\n"
+        "name: shop\n"
+        "datasets:\n"
+        "- name: Order Items\n"
+        "  source: shop.public.oi\n"
+        "  fields:\n"
+        "  - name: Gross Amount\n    expression:\n      dialects:\n"
+        "      - dialect: ANSI_SQL\n        expression: gross_raw * 2\n"
+        "    datatype: Decimal\n"
+        "metrics:\n"
+        "- name: m\n  expression:\n    dialects:\n"
         '      - dialect: ANSI_SQL\n        expression: SUM("Order Items"."Gross Amount")\n'
     )
     files, _ = convert_ossie_to_cube(ossie)
@@ -1324,7 +1325,7 @@ def test_a_join_with_no_key_at_all_says_what_cube_will_refuse():
     import yaml as _yaml
 
     doc = _yaml.safe_load(_databricks_ossie())
-    for ds in doc["semantic_model"][0]["datasets"]:
+    for ds in doc["datasets"]:
         ds.pop("unique_keys", None)
     _, issues = convert_ossie_to_cube(_yaml.dump(doc, sort_keys=False))
     dropped = issues.of_type(IssueType.DROPPED_NO_CUBE_EQUIVALENT)

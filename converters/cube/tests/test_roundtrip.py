@@ -190,8 +190,8 @@ def test_a_cross_cube_composite_normalizes_to_the_decomposed_fixed_point():
 
     # One step to the fixed point: the next cycle changes nothing on either side.
     ossie2, _ = convert_cube_to_ossie(files2)
-    assert canon(parse(ossie2))["semantic_model"][0]["metrics"] == \
-        canon(parse(ossie))["semantic_model"][0]["metrics"]
+    assert canon(parse(ossie2))["metrics"] == \
+        canon(parse(ossie))["metrics"]
     files3, _ = convert_ossie_to_cube(ossie2)
     assert parse_files(files3) == parse_files(files2)
 
@@ -274,7 +274,7 @@ def test_an_edited_generated_view_is_stashed_verbatim_again():
         "includes: '*'", "includes: [id]", 1)
     ossie2, _ = convert_cube_to_ossie(files)
     from _util import stash_of
-    stash = stash_of(parse(ossie2)["semantic_model"][0])
+    stash = stash_of(parse(ossie2))
     assert stash["views"]["ecommerce"]["cubes"][0]["includes"] == ["id"]
     assert stash["mapped_view"] == "ecommerce"
 
@@ -289,7 +289,7 @@ def test_ossie_only_constructs_are_parked_not_dropped():
     assert parked["custom_extensions"][0]["vendor_name"] == "SNOWFLAKE"
 
     ossie2, _ = convert_cube_to_ossie(files)
-    ds = {d["name"]: d for d in parse(ossie2)["semantic_model"][0]["datasets"]}
+    ds = {d["name"]: d for d in parse(ossie2)["datasets"]}
     assert ds["orders"]["unique_keys"] == [["order_number"]]
     vendors = {e["vendor_name"] for e in ds["orders"]["custom_extensions"]}
     assert "SNOWFLAKE" in vendors
@@ -311,8 +311,8 @@ def test_a_model_from_another_converter_survives_the_round_trip_exactly():
     back, _ = convert_cube_to_ossie(files)
     assert_ossie_is_valid(back, "databricks_ossie.yaml round trip")
 
-    before = parse(src)["semantic_model"][0]
-    after = parse(back)["semantic_model"][0]
+    before = parse(src)
+    after = parse(back)
 
     def shape(model):
         return {
@@ -365,7 +365,7 @@ def test_a_model_named_after_one_of_its_datasets_does_not_collide_in_cube():
     recorded so the trip back does not adopt the renamed view's.
     """
     src = load_fixture("databricks_ossie.yaml")
-    assert parse(src)["semantic_model"][0]["name"] == "orders"
+    assert parse(src)["name"] == "orders"
 
     files, issues = convert_ossie_to_cube(src)
     assert set(files) == {"model/cubes/orders.yml", "model/cubes/customer.yml",
@@ -378,7 +378,7 @@ def test_a_model_named_after_one_of_its_datasets_does_not_collide_in_cube():
 
     # And the name comes back, rather than becoming `orders_view`.
     back, _ = convert_cube_to_ossie(files)
-    assert parse(back)["semantic_model"][0]["name"] == "orders"
+    assert parse(back)["name"] == "orders"
 
 
 def test_a_renamed_view_stays_renamed_on_the_second_export():
@@ -402,16 +402,15 @@ def test_a_renamed_view_compiles_on_both_cycles():
 
 _SALES_MODEL = (
     f"version: {OSSIE_VERSION}\n"
-    "semantic_model:\n"
-    "- name: Sales Model\n"
-    "  datasets:\n"
-    "  - name: orders\n"
-    "    source: shop.public.orders\n"
-    "    primary_key:\n    - id\n"
-    "    fields:\n"
-    "    - name: id\n      dimension: {}\n      datatype: Integer\n"
-    "      expression:\n        dialects:\n"
-    "        - dialect: ANSI_SQL\n          expression: id\n"
+    "name: Sales Model\n"
+    "datasets:\n"
+    "- name: orders\n"
+    "  source: shop.public.orders\n"
+    "  primary_key:\n  - id\n"
+    "  fields:\n"
+    "  - name: id\n    dimension: {}\n    datatype: Integer\n"
+    "    expression:\n      dialects:\n"
+    "      - dialect: ANSI_SQL\n        expression: id\n"
 )
 
 
@@ -433,7 +432,7 @@ def test_a_model_name_needing_sanitizing_is_preserved():
     ossie = _SALES_MODEL
     for cycle in range(3):
         ossie, _ = convert_cube_to_ossie(convert_ossie_to_cube(ossie)[0])
-        assert parse(ossie)["semantic_model"][0]["name"] == "Sales Model", (
+        assert parse(ossie)["name"] == "Sales Model", (
             f"lost on cycle {cycle + 1}")
 
 
@@ -454,10 +453,10 @@ def test_a_name_override_that_sanitizes_to_the_view_name_is_preserved():
             "    includes: '*'\n",
     }
     ossie, _ = convert_cube_to_ossie(cube, model_name="Sales Model")
-    assert parse(ossie)["semantic_model"][0]["name"] == "Sales Model"
+    assert parse(ossie)["name"] == "Sales Model"
     for cycle in range(3):
         ossie, _ = convert_cube_to_ossie(convert_ossie_to_cube(ossie)[0])
-        assert parse(ossie)["semantic_model"][0]["name"] == "Sales Model", (
+        assert parse(ossie)["name"] == "Sales Model", (
             f"lost on cycle {cycle + 1}")
 
 
@@ -482,7 +481,7 @@ def _with_model_metadata(cube_files):
     """Import, then add the model-level metadata a user would edit in on the Ossie side."""
     ossie, _ = convert_cube_to_ossie(cube_files, model_name="Sales Model")
     doc = parse(ossie)
-    model = doc["semantic_model"][0]
+    model = doc
     model["description"] = "Sales overview with a {brace}"
     model["ai_context"] = {"instructions": "Prefer completed orders"}
     return json.loads(json.dumps(doc)), model
@@ -512,7 +511,7 @@ def test_model_metadata_survives_when_no_view_can_carry_it(label, cube_files):
     for cycle in range(3):
         files, issues = convert_ossie_to_cube(ossie)
         ossie, _ = convert_cube_to_ossie(files)
-        model = parse(ossie)["semantic_model"][0]
+        model = parse(ossie)
         assert model["name"] == "Sales Model", f"{label}: lost on cycle {cycle + 1}"
         assert model["description"] == "Sales overview with a {brace}"
         assert model["ai_context"]["instructions"] == "Prefer completed orders"
@@ -583,16 +582,15 @@ def test_a_model_from_another_converter_is_stable_after_one_cycle():
 
 _SHADOWED_KEY_COLUMN = (
     f"version: {OSSIE_VERSION}\n"
-    "semantic_model:\n"
-    "- name: shop\n"
-    "  datasets:\n"
-    "  - name: orders\n"
-    "    source: shop.public.orders\n"
-    "    primary_key:\n    - id\n"
-    "    fields:\n"
-    "    - name: id\n      expression:\n        dialects:\n"
-    "        - dialect: ANSI_SQL\n          expression: LOWER(email)\n"
-    "      datatype: String\n"
+    "name: shop\n"
+    "datasets:\n"
+    "- name: orders\n"
+    "  source: shop.public.orders\n"
+    "  primary_key:\n  - id\n"
+    "  fields:\n"
+    "  - name: id\n    expression:\n      dialects:\n"
+    "      - dialect: ANSI_SQL\n        expression: LOWER(email)\n"
+    "    datatype: String\n"
 )
 
 
