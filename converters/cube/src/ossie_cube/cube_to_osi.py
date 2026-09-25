@@ -916,12 +916,21 @@ def _apply_dimension_labels(field, dim):
         field["ai_context"] = ai
 
 
-def _case_expression(cname, dname, case):
+def _case_expression(cname, dname, case, translate=None, literal=None):
     """Translate a Cube `case` dimension into an Ossie CASE expression.
 
     A string `label` becomes a SQL literal; the `{sql: ...}` form becomes that
     expression. Both are exactly what Cube itself renders, so nothing is approximated.
+
+    `translate` renders one SQL snippet and `literal` the text of one plain label; both
+    default to the Ossie forms. View projection passes Cube-space ones, to inline a
+    `case` dimension into the SQL of a member that references it.
     """
+    if translate is None:
+        def translate(sql):
+            return cube_sql_to_ossie(sql, cname)[0]
+    if literal is None:
+        literal = unescape_braces_from_cube
     if not isinstance(case, dict):
         raise ConversionError(
             f"cube '{cname}': dimension '{dname}' has a non-mapping `case`")
@@ -931,19 +940,21 @@ def _case_expression(cname, dname, case):
             raise ConversionError(
                 f"cube '{cname}': dimension '{dname}' has a `case.when` entry with "
                 f"no `sql`")
-        condition, _ = cube_sql_to_ossie(branch["sql"], cname)
-        parts.append(f"WHEN {condition} THEN {_case_label(cname, dname, branch)}")
+        condition = translate(branch["sql"])
+        label = _case_label(cname, dname, branch, translate, literal)
+        parts.append(f"WHEN {condition} THEN {label}")
     if not parts:
         raise ConversionError(
             f"cube '{cname}': dimension '{dname}' has a `case` with no `when` "
             f"branches")
     otherwise = case.get("else")
     if isinstance(otherwise, dict) and "label" in otherwise:
-        parts.append(f"ELSE {_case_label(cname, dname, otherwise)}")
+        parts.append(
+            f"ELSE {_case_label(cname, dname, otherwise, translate, literal)}")
     return "CASE " + " ".join(parts) + " END"
 
 
-def _case_label(cname, dname, holder):
+def _case_label(cname, dname, holder, translate, literal):
     """One `label`, as SQL: a plain value is a literal, `{sql: ...}` an expression."""
     label = holder.get("label")
     if isinstance(label, dict):
@@ -951,9 +962,8 @@ def _case_label(cname, dname, holder):
             raise ConversionError(
                 f"cube '{cname}': dimension '{dname}' has a `label` object with no "
                 f"`sql`")
-        translated, _ = cube_sql_to_ossie(label["sql"], cname)
-        return translated
-    text = unescape_braces_from_cube(str(label if label is not None else ""))
+        return translate(label["sql"])
+    text = literal(str(label if label is not None else ""))
     return "'" + text.replace("'", "''") + "'"
 
 
@@ -1350,7 +1360,11 @@ class _MeasureResolver:
     reject a legitimate model to guard against a hand-written pathological one.
     """
 
-    def __init__(self, cubes, pk_by_cube, issues):
+    def __init__(self, cubes, pk_by_cube, issues, qualify=True):
+        # `qualify=False` is for SQL whose columns are already qualified -- view
+        # projection's -- where the portable grammar's reading of a bare name (`day` in
+        # `DATEDIFF(day, a, b)`) is not to be trusted.
+        self._qualify = qualify
         self._pk = pk_by_cube
         self._issues = issues
         self._raw = {}
@@ -1540,7 +1554,7 @@ class _MeasureResolver:
         expression.
         """
         out, _ = cube_sql_to_ossie(
-            qualify_bare_columns(sql), cname,
+            qualify_bare_columns(sql) if self._qualify else sql, cname,
             resolve_ref=lambda body: self._resolve(body, cname, stack, inline_refs),
             self_prefix=cname, cube_names=self._cube_names)
         return out
