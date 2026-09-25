@@ -1634,6 +1634,15 @@ def _fanout_unsafe_datasets(expr, own_cube, dataset_names):
     return found
 
 
+def _report_fanout(issues, scope, dataset, cause):
+    """Record that the metric at `scope` reads `dataset`, which `cause` fans out."""
+    issues.add(
+        IssueType.FANOUT_UNSAFE_METRIC, scope,
+        f"a non-idempotent aggregate reads dataset '{dataset}', which {cause} fans "
+        f"out; Cube deduplicates on the primary key at query time but a static Ossie "
+        f"expression cannot, so a consumer joining through that join may over-count")
+
+
 def _windowing_key(measure):
     """The first windowing key present on a measure, or None."""
     for key in _WINDOWING_KEYS:
@@ -1785,29 +1794,19 @@ def _field_owners_of(member_names):
     return owners
 
 
-def _convert_measures(cubes, pk_by_cube, plain_by_cube, fanned_out, relationships,
-                      issues):
-    """Hoist every cube's measures into Ossie model-level metrics.
+def _metric_names_of(resolver, decomposed):
+    """{(cube, measure): the Ossie metric name it becomes}, for every measure that
+    produces a metric at all.
 
-    A metric name is the measure name when globally unique, else
-    `<cube>__<measure>`; the original name is stashed so export puts the measure
-    back where it came from.
+    Decided before any expression is emitted: a measure reference resolves to the
+    referenced measure's *metric name*, so the names have to exist first -- and only
+    measures that convert get one. The `inlined()` form is name-independent, which is
+    what breaks the circularity (it also warms the cache the fan-out analysis reads).
 
-    Returns (metrics, {cube: [{"index": i, "measure": ...}]}). The second value holds
-    measures with no static Ossie expression -- a multi-stage measure renders as a
-    window function over another grain -- which have no `metrics` entry and would
-    otherwise vanish. They ride on the owning dataset's stash with their positions,
-    the same protocol unconvertible joins use.
+    A name is the measure's own when unique across the model, else
+    `<cube>__<measure>`. View projection reads it too, to find the metric a published
+    measure became.
     """
-    resolver = _MeasureResolver(cubes, pk_by_cube, issues)
-    member_names = _member_names_of(cubes)
-    decomposed = _decomposed_measure_names(cubes)
-
-    # Which measures produce a metric at all, decided before any expression is
-    # emitted: a measure reference resolves to the referenced measure's *metric
-    # name*, so the names have to exist first -- and only measures that convert
-    # get one. The `inlined()` form is name-independent, which is what breaks the
-    # circularity (it also warms the cache the fan-out analysis reads).
     converts = {key: resolver.inlined(*key) is not None
                 for key in resolver.measures()}
 
@@ -1830,6 +1829,27 @@ def _convert_measures(cubes, pk_by_cube, plain_by_cube, fanned_out, relationship
         # normalized.
         metric_names[key] = (mname if counts[normalize_identifier(mname)] == 1
                              else f"{cname}__{mname}")
+    return metric_names
+
+
+def _convert_measures(cubes, pk_by_cube, plain_by_cube, fanned_out, relationships,
+                      issues):
+    """Hoist every cube's measures into Ossie model-level metrics.
+
+    A metric name is the measure name when globally unique, else
+    `<cube>__<measure>`; the original name is stashed so export puts the measure
+    back where it came from.
+
+    Returns (metrics, {cube: [{"index": i, "measure": ...}]}). The second value holds
+    measures with no static Ossie expression -- a multi-stage measure renders as a
+    window function over another grain -- which have no `metrics` entry and would
+    otherwise vanish. They ride on the owning dataset's stash with their positions,
+    the same protocol unconvertible joins use.
+    """
+    resolver = _MeasureResolver(cubes, pk_by_cube, issues)
+    member_names = _member_names_of(cubes)
+    decomposed = _decomposed_measure_names(cubes)
+    metric_names = _metric_names_of(resolver, decomposed)
     resolver.set_metric_names(metric_names)
 
     # What the stash decisions need to know about the metric namespace: which cube
@@ -1917,12 +1937,7 @@ def _convert_measure(cname, mname, metric_name, measure, context):
                                     context.dataset_names)):
         if dataset not in context.fanned_out:
             continue
-        issues.add(
-            IssueType.FANOUT_UNSAFE_METRIC, scope,
-            f"a non-idempotent aggregate reads dataset '{dataset}', which "
-            f"{context.fanned_out[dataset]} fans out; Cube deduplicates on the "
-            f"primary key at query time but a static Ossie expression cannot, so "
-            f"a consumer joining through that join may over-count")
+        _report_fanout(issues, scope, dataset, context.fanned_out[dataset])
 
     metric = {
         "name": metric_name,
