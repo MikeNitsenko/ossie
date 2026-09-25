@@ -137,7 +137,19 @@ def convert_cube_to_ossie(files, model_name=None, view=None, strict_fanout=False
     cubes, cube_paths, views, view_paths, extra_files = _collect(files, issues)
     if not cubes:
         raise ConversionError(_no_cubes_message(views))
+    model = _build_model(cubes, cube_paths, views, view_paths, extra_files,
+                         model_name, view, issues)
+    return dump_yaml({"version": OSSIE_VERSION, **model}), issues
 
+
+def _build_model(cubes, cube_paths, views, view_paths, extra_files, model_name,
+                 view, issues):
+    """The Ossie model (a dict, without `version`) for the collected Cube model.
+
+    Split from `convert_cube_to_ossie` so view projection can run the same import over
+    the reduced cube set it builds, rather than serializing that set to YAML only to
+    parse it straight back.
+    """
     # The mapped view supplies the Ossie model's identity. Cube users are
     # view-first, and Cube's own agent reads `meta.ai_context` only from views and
     # individual members -- so the view, not any cube, is the model boundary.
@@ -235,8 +247,7 @@ def convert_cube_to_ossie(files, model_name=None, view=None, strict_fanout=False
     # Foreign-vendor extensions a previous export parked on the mapped view are
     # restored after the stash is written, so the CUBE entry stays first.
     _restore_parked_extensions(model, mapped_view.get("meta"))
-
-    return dump_yaml({"version": OSSIE_VERSION, **model}), issues
+    return model
 
 
 # --- collection -----------------------------------------------------------------
