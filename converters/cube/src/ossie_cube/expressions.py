@@ -514,6 +514,10 @@ def _misread(tree):
     a unit -- what the portable grammar does to `DATEDIFF(day, a, b)`."""
     if any(var.name.upper() not in _UNIT_WORDS for var in tree.find_all(exp.Var)):
         return True
+    # The portable grammar reads a bracket-quoted `[amount]` as an array of one column.
+    if any(array.expressions and all(isinstance(e, exp.Column) for e in array.expressions)
+           for array in tree.find_all(exp.Array)):
+        return True
     return any(not column.table and isinstance(column.parent, exp.Func)
                and column.name.upper() in _UNIT_WORDS | _TYPE_WORDS
                for column in tree.find_all(exp.Column))
@@ -527,6 +531,18 @@ def strip_sql_comments(sql):
     """
     text = str(sql)
     mask = quoted_char_mask(text)
+    # T-SQL's bracket-quoted identifiers are opaque too: `[amount--gross]` is a name.
+    bracket = False
+    for i, ch in enumerate(text):
+        if mask[i]:
+            continue
+        if bracket:
+            mask[i] = True
+            bracket = ch != "]" or text.startswith("]]", i)
+            if text.startswith("]]", i):
+                mask[i + 1] = True
+        elif ch == "[":
+            mask[i] = bracket = True
     out, i = [], 0
     while i < len(text):
         if not mask[i] and text.startswith("--", i):
@@ -574,7 +590,8 @@ def qualify_column_paths(cube_sql, own_cube=None, cube_names=()):
             "a column that shares a unit's name as {CUBE}.name")
     if tree.find(exp.Select, exp.Lambda) is not None:
         raise UnattributableSQL("it binds names of its own (a subquery or a lambda)")
-    others = {name.casefold() for name in cube_names if name != own_cube}
+    own = own_cube.casefold() if own_cube else None
+    others = {name.casefold() for name in cube_names} - {own}
     edits = []
     for column in tree.find_all(exp.Column):
         head = column.parts[0] if column.parts else None
@@ -585,10 +602,10 @@ def qualify_column_paths(cube_sql, own_cube=None, cube_names=()):
             continue
         if not isinstance(start, int):
             raise UnattributableSQL(f"sqlglot gives '{column.sql()}' no source position")
-        folded = head.name if head.args.get("quoted") else head.name.casefold()
-        if len(column.parts) > 1 and own_cube and folded in (own_cube, own_cube.casefold()):
+        folded = head.name.casefold()
+        if len(column.parts) > 1 and folded == own:
             edits.append((start, head.meta["end"] + 1, "{CUBE}"))
-        elif len(column.parts) > 1 and folded.casefold() in others:
+        elif len(column.parts) > 1 and folded in others:
             path = column.sql()
             rest = path.split(".", 1)[1]
             raise UnattributableSQL(

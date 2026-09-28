@@ -347,7 +347,9 @@ def _entry_members(vname, entry, cname, cube, decomposed):
         raise ConversionError(
             f"view '{vname}': includes for cube '{cname}' must be '*' or a list")
 
-    excludes = entry.get("excludes") or []
+    excludes = entry.get("excludes")
+    if excludes is None:
+        excludes = []
     if not isinstance(excludes, list) or not all(isinstance(x, str) for x in excludes):
         raise ConversionError(
             f"view '{vname}': excludes for cube '{cname}' must be a list of member "

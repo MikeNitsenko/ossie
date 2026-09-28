@@ -753,6 +753,27 @@ def test_a_path_starting_with_another_cubes_name_is_ambiguous():
         _project(_PATHS.replace("SQL", "accounts.balance"))
 
 
+@pytest.mark.parametrize(("sql", "expected"), [
+    ("CONCAT(`first name`, `x-y`)", "MAX(CONCAT(orders.`first name`, orders.`x-y`))"),
+    ("[first name] + 1", "MAX(orders.[first name] + 1)"),
+    ("[amount]", "MAX(orders.[amount])"),
+    ("[orders].amount", "MAX(orders.amount)"),
+    ("[amount--gross] + [col/*x*/y]", "MAX(orders.[amount--gross] + orders.[col/*x*/y])"),
+    ('"Orders".amount', "MAX(orders.amount)"),
+    ('"first name" || note', 'MAX(orders."first name" || orders.note)'),
+])
+def test_quoted_identifiers_of_the_data_sources_dialect_are_qualified(sql, expected):
+    text = _single_cube(measures=f"      - {{name: named, sql: '{sql}', type: max}}\n",
+                        includes="[named]")
+    # Not through `_project`: like the round-trip import, the expression is the data
+    # source's own SQL labelled ANSI_SQL, and validate.py parses backticks and brackets
+    # as ANSI -- which they are not. Only the ANSI spellings are checked by the validator.
+    out, _, _ = convert_cube_view_to_ossie({"model.yml": text}, "sales")
+    assert _metric(out, "named") == expected
+    if "`" not in sql and "[" not in sql:
+        assert_ossie_is_valid(out, "ANSI-quoted identifiers")
+
+
 def test_raw_joined_column_adds_its_hidden_dependency_join():
     text = """
 cubes:
@@ -1033,6 +1054,8 @@ def test_malformed_multi_stage_defaults_are_refused(key, value):
     (("alias: name", "alias: STATUS"), "case-insensitive"),
     (("- status\n", "- orders.status\n"), "is a path"),
     (("prefix: true", "prefix: 'yes'"), "prefix.*true or false"),
+    (("includes:\n          - status\n          - average_value",
+      "includes: '*'\n        excludes: false"), "excludes.*must be a list"),
     (("includes:\n          - status\n          - average_value", "includes: all"),
      "must be '\\*' or a list"),
     # Graph shape.
