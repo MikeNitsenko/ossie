@@ -626,6 +626,12 @@ def test_raw_column_is_not_shadowed_by_a_same_named_computed_dimension():
      "AVG(TIMESTAMPDIFF(SECOND, orders.created_at, orders.shipped_at))"),
     ("CONVERT(VARCHAR, code)", "AVG(CONVERT(VARCHAR, orders.code))"),
     ("EXTRACT(YEAR FROM created_at)", "AVG(EXTRACT(YEAR FROM orders.created_at))"),
+    ("DATEADD(day, 1, created_at)", "AVG(DATEADD(day, 1, orders.created_at))"),
+    # A column named like a unit is a column everywhere else.
+    ("CAST(year AS INT)", "AVG(CAST(orders.year AS INT))"),
+    ("COALESCE(month, 1)", "AVG(COALESCE(orders.month, 1))"),
+    # An array constructor is not a bracket-quoted name.
+    ("SIZE(array(a, b))", "AVG(SIZE(array(orders.a, orders.b)))"),
 ])
 def test_unit_and_type_arguments_are_not_columns(sql, expected):
     out, _, _ = convert_cube_view_to_ossie({"model.yml": _single_cube(
@@ -633,6 +639,17 @@ def test_unit_and_type_arguments_are_not_columns(sql, expected):
         measures='      - {name: avg_lead, sql: "{lead}", type: avg}\n',
         includes="[avg_lead]")}, "sales")
     assert _metric(out, "avg_lead") == expected
+
+
+def test_a_bracket_inside_a_comment_opens_nothing():
+    text = _single_cube(
+        dimensions="      - name: gross\n        sql: |\n"
+                   "          amount -- see [1\n          + tax -- more\n        type: number\n",
+        measures='      - {name: doubled, sql: "{gross} * 2", type: sum}\n',
+        includes="[doubled]")
+    out, _, _ = _project(text)
+    assert " ".join(_metric(out, "doubled").split()) == (
+        "SUM((orders.amount + orders.tax) * 2)")
 
 
 def test_a_trailing_comment_does_not_swallow_the_expression_it_is_inlined_into():
@@ -884,6 +901,19 @@ def test_fanout_through_a_chain_of_joins_is_caught():
         "orders.total"]
 
 
+def test_a_struct_path_of_the_unfanned_side_is_not_blamed_on_a_joined_dataset():
+    # sqlglot reads `orders.users.ltv` as table `users`, which the join fans out; the
+    # column is a struct field of `orders`, which nothing multiplies.
+    text = _MODEL.replace("          - status\n          - average_value",
+                          "          - status\n          - struct_sum").replace(
+        '        sql: "{revenue} / {count}"\n        type: number',
+        '        sql: "{revenue} / {count}"\n        type: number\n'
+        '      - name: struct_sum\n        sql: "{CUBE}.users.ltv"\n        type: sum')
+    out, _, issues = _project(text)
+    assert _metric(out, "struct_sum") == "SUM(orders.users.ltv)"
+    assert not issues.of_type(IssueType.FANOUT_UNSAFE_METRIC)
+
+
 def test_a_struct_path_is_attributed_to_its_dataset_for_fanout():
     # sqlglot reads `users.stats.ltv` as table `stats`; the dataset is `users`.
     text = _FANOUT.replace("        sql: ltv\n", "        sql: stats.ltv\n")
@@ -959,12 +989,14 @@ def test_only_the_published_surface_carries_a_stash():
     ).replace("  - name: users\n    sql_table: main.sales.users\n",
               "  - name: users\n    sql_table: main.sales.users\n"
               "    data_source: crm\n    pre_aggregations: [{name: main}]\n"
-              "    access_policy: [{group: '*'}]\n")
+              "    access_policy: [{group: '*'}]\n").replace(
+        "  - name: orders\n    sql_table: main.sales.orders\n",
+        "  - name: orders\n    sql_table: main.sales.orders\n    data_source: crm\n")
     out, _, issues = _project(text)
     model = model_of(out)
     datasets = by_name(model["datasets"])
     assert "custom_extensions" not in model
-    assert "custom_extensions" not in datasets["orders"]
+    assert stash_of(datasets["orders"]) == {"cube_extras": {"data_source": "crm"}}
     assert stash_of(datasets["users"]) == {"cube_extras": {"data_source": "crm"}}
     assert stash_of(by_name(datasets["orders"]["fields"])["status"]) == {"format": "id"}
     dropped = {i.element_name: i.detail
@@ -1197,6 +1229,15 @@ def test_a_referenced_geo_dimension_is_refused():
                    '      - {name: where, sql: "{place}", type: string}\n',
         includes="[where]")
     with pytest.raises(ConversionError, match="uses geo.*where it is referenced"):
+        _project(text)
+
+
+def test_cubes_from_different_data_sources_are_refused():
+    text = _MODEL.replace("  - name: users\n    sql_table: main.sales.users\n",
+                          "  - name: users\n    sql_table: main.sales.users\n"
+                          "    data_source: crm\n")
+    with pytest.raises(ConversionError, match="different data sources.*'orders' in "
+                                              "'default', 'users' in 'crm'"):
         _project(text)
 
 

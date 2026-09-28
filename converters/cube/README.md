@@ -398,6 +398,7 @@ surface. The round-trip import is unchanged.
   step its cube does not declare (or declares twice), a split entry, or no `cubes`
   entries (the legacy view-level `includes` form);
 - a hidden dependency on a cube with no declared join path from the root, or several;
+- cubes from different Cube `data_source`s, which Cube cannot join;
 - two published names that collide, case-insensitively;
 - an included or excluded member the cube does not have, an include written as a path,
   a non-boolean `prefix`, or an empty or non-string alias;
@@ -409,8 +410,8 @@ surface. The round-trip import is unchanged.
 - a reference to an unknown cube or member, a dimension referencing a measure, a
   reference cycle, or a referenced `geo`/`switch`/`sub_query` dimension;
 - SQL whose source columns cannot be proven statically: it does not parse, it has a
-  subquery or lambda, no grammar reads a unit or type argument (`DATEDIFF(day, a, b)`,
-  `CONVERT(VARCHAR, x)`) as anything but a column, or a raw path starts with another
+  subquery or lambda, no grammar reads the unit or type that opens `DATEDIFF(day, a, b)`
+  or `CONVERT(VARCHAR, x)` as anything but a column, or a raw path starts with another
   cube's name (`accounts.balance`: that cube's table when it is joined, else a struct
   field -- write `{CUBE}.accounts.balance` or `{accounts}.balance`);
 - a published dimension reading another cube, which a dataset-scoped field cannot join;
@@ -421,7 +422,8 @@ surface. The round-trip import is unchanged.
 - under `strict_fanout` (the default), a published metric -- or a hidden measure it
   depends on -- that can over-count; see [Fan-out](#fan-out). Beyond the import's
   per-join check, a dataset multiplied further along the tree counts too (`orders`
-  many-to-one `users`, `users` one-to-many `addresses`).
+  many-to-one `users`, `users` one-to-many `addresses`), and an aggregate is charged
+  to the dataset at the head of each column path, a struct field's included.
 
 ## Onward conversion
 

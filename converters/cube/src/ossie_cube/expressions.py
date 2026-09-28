@@ -305,27 +305,30 @@ def unsafe_aggregate_datasets(expr):
     return datasets, unqualified
 
 
-def unsafe_aggregate_path_heads(expr):
-    """The first part of every column path of three or more parts that a
-    non-idempotent aggregate in `expr` reads, or None when `expr` does not parse.
+def unsafe_aggregate_heads(expr):
+    """The first part of every column path a non-idempotent aggregate in `expr` reads,
+    and whether any reads an unqualified column -- or None when `expr` does not parse.
 
-    sqlglot reads `orders.payload.amount` as db `orders`, table `payload`, so
-    `unsafe_aggregate_datasets` attributes it to `payload`. In a view projection every
-    column is written `dataset.path` -- a struct field keeps its dataset in front -- so
-    the head is the dataset, and this is what lets projection check the one it read.
+    `unsafe_aggregate_datasets` names a column by its table, which is its second part
+    once a path has three: `orders.payload.amount` is attributed to `payload`. In a view
+    projection every column is written `dataset.path`, so the head is the dataset.
     """
     tree = parse(expr)
     if tree is None:
         return None
-    heads = set()
+    heads, unqualified = set(), False
     for scope in _outermost_aggregate_scopes(tree):
         if is_idempotent_aggregate(scope):
             continue
-        for column in scope.find_all(exp.Column):
-            parts = column.parts
-            if len(parts) >= 3 and isinstance(parts[0], exp.Identifier):
-                heads.add(parts[0].name)
-    return heads
+        columns = list(scope.find_all(exp.Column))
+        for column in columns:
+            if len(column.parts) > 1 and isinstance(column.parts[0], exp.Identifier):
+                heads.add(column.parts[0].name)
+            else:
+                unqualified = True
+        if not columns:
+            unqualified = True
+    return heads, unqualified
 
 
 def unsplittable_aggregate_datasets(expr):
@@ -490,6 +493,13 @@ _UNIT_WORDS = frozenset({
     "CENTURY", "MILLENNIUM", "TIMEZONE", "TIMEZONE_HOUR", "TIMEZONE_MINUTE", "YYYY",
     "YY", "MM", "DD", "HH", "MI", "SS", "MS",
 })
+# Functions whose first argument is a date part or type name, not a column.
+_UNIT_FIRST_FUNCTIONS = frozenset({
+    "DATEDIFF", "DATE_DIFF", "DATEADD", "DATE_ADD", "DATEPART", "DATE_PART", "DATENAME",
+    "DATETRUNC", "TIMESTAMPDIFF", "TIMESTAMPADD", "TIMESTAMP_DIFF", "TIMESTAMP_ADD",
+    "CONVERT", "TRY_CONVERT",
+})
+_CALL_BEFORE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*$")
 _TYPE_WORDS = frozenset({
     "VARCHAR", "NVARCHAR", "CHAR", "NCHAR", "INT", "INTEGER", "BIGINT", "SMALLINT",
     "TINYINT", "DECIMAL", "NUMERIC", "FLOAT", "REAL", "DOUBLE", "DATETIME", "DATETIME2",
@@ -509,53 +519,61 @@ def _parse_as(text, dialect):
         return None
 
 
-def _misread(tree):
-    """True when a reading takes a unit or type argument for a column, or a column for
-    a unit -- what the portable grammar does to `DATEDIFF(day, a, b)`."""
+def _misread(tree, text):
+    """True when a reading of `text` takes a unit or type argument for a column, or a
+    column for a unit -- what the portable grammar does to `DATEDIFF(day, a, b)`."""
     if any(var.name.upper() not in _UNIT_WORDS for var in tree.find_all(exp.Var)):
         return True
     # The portable grammar reads a bracket-quoted `[amount]` as an array of one column.
-    if any(array.expressions and all(isinstance(e, exp.Column) for e in array.expressions)
-           for array in tree.find_all(exp.Array)):
+    if "[" in text and any(
+            array.expressions and all(isinstance(e, exp.Column) for e in array.expressions)
+            for array in tree.find_all(exp.Array)):
         return True
-    return any(not column.table and isinstance(column.parent, exp.Func)
-               and column.name.upper() in _UNIT_WORDS | _TYPE_WORDS
-               for column in tree.find_all(exp.Column))
+    for column in tree.find_all(exp.Column):
+        if column.table or column.name.upper() not in _UNIT_WORDS | _TYPE_WORDS:
+            continue
+        start = column.this.meta.get("start")
+        call = _CALL_BEFORE_RE.search(text[:start]) if isinstance(start, int) else None
+        if call and call.group(1).upper() in _UNIT_FIRST_FUNCTIONS:
+            return True
+    return False
 
 
 def strip_sql_comments(sql):
     """`sql` with its `--` and `/* */` comments replaced by a space.
 
     A trailing `-- note` is harmless in a member's own SQL, but inlined into another
-    expression it comments out everything after it.
+    expression it comments out everything after it. Quoted text and T-SQL's bracket-quoted
+    identifiers (`[amount--gross]`, `]]` escaping a bracket) are left alone, in the same
+    left-to-right scan, so a bracket inside a comment opens nothing.
     """
     text = str(sql)
-    mask = quoted_char_mask(text)
-    # T-SQL's bracket-quoted identifiers are opaque too: `[amount--gross]` is a name.
-    bracket = False
-    for i, ch in enumerate(text):
-        if mask[i]:
-            continue
-        if bracket:
-            mask[i] = True
-            bracket = ch != "]" or text.startswith("]]", i)
-            if text.startswith("]]", i):
-                mask[i + 1] = True
-        elif ch == "[":
-            mask[i] = bracket = True
-    out, i = [], 0
+    quoted = quoted_char_mask(text)
+    out, i, bracket = [], 0, False
     while i < len(text):
-        if not mask[i] and text.startswith("--", i):
+        if quoted[i]:
+            out.append(text[i])
+        elif bracket:
+            if text.startswith("]]", i):
+                out.append("]]")
+                i += 2
+                continue
+            bracket = text[i] != "]"
+            out.append(text[i])
+        elif text.startswith("--", i):
             end = text.find("\n", i)
             i = len(text) if end < 0 else end
             out.append(" ")
-        elif not mask[i] and text.startswith("/*", i):
+            continue
+        elif text.startswith("/*", i):
             end = text.find("*/", i + 2)
             i = len(text) if end < 0 else end + 2
             out.append(" ")
+            continue
         else:
+            bracket = text[i] == "["
             out.append(text[i])
-            i += 1
+        i += 1
     return "".join(out)
 
 
@@ -583,7 +601,7 @@ def qualify_column_paths(cube_sql, own_cube=None, cube_names=()):
     readings = [t for t in (_parse_as(masked, d) for d in _READINGS) if t is not None]
     if not readings:
         raise UnattributableSQL("it does not parse")
-    tree = next((t for t in readings if not _misread(t)), None)
+    tree = next((t for t in readings if not _misread(t, masked)), None)
     if tree is None:
         raise UnattributableSQL(
             "a unit or type argument reads as a column (or a column as a unit); write "

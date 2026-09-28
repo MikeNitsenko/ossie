@@ -83,7 +83,7 @@ from .expressions import (
     UnattributableSQL,
     has_top_level_operator,
     qualify_column_paths,
-    unsafe_aggregate_path_heads,
+    unsafe_aggregate_heads,
 )
 
 _SELF_REFS = ("CUBE", "TABLE")
@@ -196,17 +196,25 @@ def convert_cube_view_to_ossie(files, view, source=None, strict_fanout=True):
         for sql in [measure.get("sql"), *(f["sql"] for f in measure.get("filters", ()))]:
             dependencies |= _joined_cubes(sql, cname, cubes)
     _attach_dependencies(view, tree, sorted(dependencies), cubes)
+    _refuse_mixed_data_sources(view, tree, cubes)
     resolved_source = _resolve_source(view, source, tree, members)
 
     reduced = _reduced_cubes(tree, cubes, dimensions, measures, inliner, issues)
     reduced_view = {k: v for k, v in view_def.items() if k != "cubes"}
-    model = _build_model(reduced, {}, {view: reduced_view}, {}, {}, None, view, issues)
-    _refuse_unjoined(view, model, issues)
+    # The import runs lenient, and its fan-out reports are replaced by the projection's
+    # own: it attributes a struct path (`orders.accounts.balance`) to its second part,
+    # and checks each join alone rather than the whole tree.
+    imported = IssueLog()
+    model = _build_model(reduced, {}, {view: reduced_view}, {}, {}, None, view, imported)
+    _refuse_unjoined(view, model, imported)
+    for issue in imported:
+        if issue.issue_type is not IssueType.FANOUT_UNSAFE_METRIC:
+            issues.add(issue.issue_type, issue.element_name, issue.detail)
     # A second resolver over the same cubes, for the fully inlined forms: the import
     # emits a reference to a hidden measure by its metric name, and that metric is not
-    # published. Its report was made by the import's own; this one only reads.
+    # published.
     resolver = _MeasureResolver(reduced, {}, IssueLog(), qualify=False)
-    _report_hidden_fanout(resolver, tree, reduced, model, measures, issues)
+    _report_fanout_of(resolver, tree, reduced, model, measures, issues)
     _publish_surface(model, resolver, reduced, cubes, members, issues)
     return dump_yaml({"version": OSSIE_VERSION, **model}), resolved_source, issues
 
@@ -833,35 +841,54 @@ def _refuse_unjoined(vname, model, issues):
                 f"relationship form" + (f": {reasons[0]}" if reasons else ""))
 
 
-def _report_hidden_fanout(resolver, tree, reduced, model, measures, issues):
-    """Report the fan-out the import's per-join check cannot see.
+def _report_fanout_of(resolver, tree, reduced, model, measures, issues):
+    """Report every published or hidden measure that can over-count.
 
-    The import marks only the one side of each relationship as fanned out, and
-    attributes a struct path (`users.stats.ltv`) by its second part. Across a chain --
-    `orders` many-to-one `users`, `users` one-to-many `addresses` -- `orders` is
-    multiplied too, and a projection publishing both cannot leave that unchecked.
+    A dataset is fanned out when some join in the tree multiplies its rows: the one
+    side of a relationship, as the import has it, but equally a dataset further along a
+    chain -- `orders` many-to-one `users`, `users` one-to-many `addresses` multiplies
+    `orders`. Every projected metric column is written `dataset.path`, so the dataset an
+    aggregate reads is the head of each path, a struct field's included.
     """
-    imported = _fanned_out_datasets(model.get("relationships") or [])
-    chained = {}
+    fanned = {}
     for name in tree.order:
         reached = _multiplied_from(name, tree)
         if reached:
-            chained[name] = f"the one-to-many join path to '{min(reached)}'"
+            fanned[name] = f"the one-to-many join path to '{min(reached)}'"
+    # The relationship itself is the cause a reader can act on, where there is one.
+    fanned.update(_fanned_out_datasets(model.get("relationships") or []))
     names = frozenset(reduced)
     canonical = lookup_map(names)
     for cname, mname in measures:
         expr = resolver.inlined(cname, mname)
         if expr is None:
             continue
-        attributed = _fanout_unsafe_datasets(expr, cname, names)
-        heads = {resolve_identifier(canonical, h)
-                 for h in unsafe_aggregate_path_heads(expr) or ()}
-        for dataset in sorted((attributed | heads) - {None}):
-            if dataset in attributed and dataset in imported:
-                continue  # the import reported it
-            cause = imported.get(dataset) or chained.get(dataset)
-            if cause:
-                _report_fanout(issues, f"{cname}.{mname}", dataset, cause)
+        read = unsafe_aggregate_heads(expr)
+        if read is None:
+            # Unparseable, so every dataset it names is assumed read.
+            datasets = _fanout_unsafe_datasets(expr, cname, names)
+        else:
+            heads, unqualified = read
+            datasets = {resolve_identifier(canonical, h) for h in heads} - {None}
+            if unqualified:
+                datasets.add(cname)
+        for dataset in sorted(datasets):
+            if dataset in fanned:
+                _report_fanout(issues, f"{cname}.{mname}", dataset, fanned[dataset])
+
+
+def _refuse_mixed_data_sources(vname, tree, cubes):
+    """Refuse a projection joining cubes from different Cube data sources.
+
+    Cube cannot join across data sources, and a published model whose relationships
+    span two warehouses is one no consumer can query.
+    """
+    sources = {name: cubes[name].get("data_source", "default") for name in tree.order}
+    if len(set(map(str, sources.values()))) > 1:
+        listed = ", ".join(f"'{name}' in '{src}'" for name, src in sources.items())
+        raise ConversionError(
+            f"view '{vname}' joins cubes from different data sources ({listed}); "
+            f"Cube cannot join across data sources, so project each separately")
 
 
 # --- the published surface --------------------------------------------------------
