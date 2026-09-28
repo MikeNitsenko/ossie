@@ -1338,6 +1338,20 @@ def test_unreachable_dependency_path_search_is_bounded():
         convert_cube_view_to_ossie({"model.yml": text}, "sales")
 
 
+@pytest.mark.parametrize(("member", "message"), [
+    ("      - {sql: x, type: sum}\n", "cube 'orders': measure is missing required 'name'"),
+    ("      - {name: 5, sql: x, type: sum}\n", "'name' must be a string, got int"),
+])
+@pytest.mark.parametrize("includes", ["[revenue]", "'*'"])
+def test_a_member_without_a_name_is_refused_as_the_import_refuses_it(
+        member, message, includes):
+    with pytest.raises(ConversionError, match=message):
+        _project(_single_cube(measures=member, includes=includes))
+    with pytest.raises(ConversionError, match="dimension is missing required 'name'"):
+        _project(_single_cube(dimensions="      - {sql: x, type: string}\n",
+                              includes=includes))
+
+
 def test_input_errors_are_refused():
     with pytest.raises(ConversionError, match="non-empty mapping"):
         convert_cube_view_to_ossie({}, "sales")

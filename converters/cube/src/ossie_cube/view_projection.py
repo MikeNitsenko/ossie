@@ -50,6 +50,7 @@ from ._common import (
     primary_key_operand,
     read_stash,
     requalify_self_refs,
+    require_str,
     resolve_identifier,
     snake,
     snake_keys,
@@ -174,6 +175,12 @@ def convert_cube_view_to_ossie(files, view, source=None, strict_fanout=True):
             f"{sorted(views) or 'none'}")
     if not cubes:
         raise ConversionError(_no_cubes_message(views))
+    # Every member is addressed by name below, so a nameless one is refused up front,
+    # with the import's own message.
+    for cname, cube in cubes.items():
+        for key in ("dimensions", "measures"):
+            for member in _as_named_list(cube.get(key), f"cube '{cname}' {key}"):
+                require_str(member, "name", f"cube '{cname}': {key[:-1]}")
 
     strict = {IssueType.FANOUT_UNSAFE_METRIC} if strict_fanout else set()
     issues = IssueLog(strict_types=frozenset(strict))
@@ -683,10 +690,15 @@ def _attach_dependencies(vname, tree, dependencies, cubes):
     joined the way Cube joins it: along the declared joins. Only a unique path is
     followed; with two, the member's value would depend on which one a consumer took.
     """
+    adjacency = {
+        cname: [j.get("name") for j in _as_named_list(cube.get("joins"),
+                                                     f"cube '{cname}' joins")
+                if j.get("name") in cubes]
+        for cname, cube in cubes.items()}
     for target in dependencies:
         if target in tree.order:
             continue
-        paths = _declared_join_paths(cubes, tree.root, target)
+        paths = _declared_join_paths(adjacency, tree.root, target)
         if not paths:
             raise ConversionError(
                 f"view '{vname}': published members depend on cube '{target}', but no "
@@ -704,18 +716,14 @@ def _attach_dependencies(vname, tree, dependencies, cubes):
                 tree.order.append(right)
 
 
-def _declared_join_paths(cubes, start, target):
+def _declared_join_paths(adjacency, start, target):
     """One declared join path from `start` to `target`, plus a second when there is one.
 
-    Breadth-first, so an unreachable target costs one pass over the graph rather than an
-    enumeration of every simple path. Any other path omits at least one edge of the first,
-    so searching again with each of its edges removed in turn finds it if it exists.
+    `adjacency` is {cube: [cubes it declares a join to]}. Breadth-first, so an unreachable
+    target costs one pass over the graph rather than an enumeration of every simple path.
+    Any other path omits at least one edge of the first, so searching again with each of
+    its edges removed in turn finds it if it exists.
     """
-    adjacency = {
-        cname: [j.get("name") for j in _as_named_list(cube.get("joins"),
-                                                     f"cube '{cname}' joins")
-                if j.get("name") in cubes]
-        for cname, cube in cubes.items()}
 
     def search(blocked=None):
         parents, queue = {start: None}, deque([start])
