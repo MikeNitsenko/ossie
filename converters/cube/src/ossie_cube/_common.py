@@ -46,7 +46,7 @@ VENDOR = "CUBE"
 DEFAULT_MODEL_NAME = "cube_model"
 
 # Cube SQL is the SQL of the model's data source, so there is no CUBE entry in
-# the Ossie dialect enum. Import emits ANSI_SQL; export prefers ANSI_SQL and lets
+# the Ossie dialect enum. Import defaults to ANSI_SQL; export prefers ANSI_SQL and lets
 # the caller prepend a warehouse dialect the actual data source would accept.
 DIALECT_ANSI = "ANSI_SQL"
 # Ossie's own portable SQL expression language (see core-spec/expression_language.md).
@@ -57,7 +57,13 @@ DIALECT_OSSIE_SQL = "OSSIE_SQL_2026"
 # straight to the data source. The spec's enum also contains MDX, TABLEAU and MAQL,
 # which are query or calculation languages rather than warehouse SQL -- an expression
 # in one of those is not usable as a Cube `sql` at all.
-WAREHOUSE_DIALECTS = frozenset({DIALECT_ANSI, "SNOWFLAKE", "DATABRICKS", "BIGQUERY"})
+SQL_DIALECT_READERS = {
+    DIALECT_ANSI: None,
+    "SNOWFLAKE": "snowflake",
+    "DATABRICKS": "databricks",
+    "BIGQUERY": "bigquery",
+}
+WAREHOUSE_DIALECTS = frozenset(SQL_DIALECT_READERS)
 
 # Bump when the shape of a stashed `data` blob changes.
 STASH_VERSION = 1
@@ -1207,7 +1213,7 @@ AGG_TO_RESULT_DATATYPE = {
 }
 
 
-def primary_key_operand(cube_name, primary_keys, render=None):
+def primary_key_operand(cube_name, primary_keys, render=None, source_dialect=None):
     """The single scalar expression standing for a cube's primary key.
 
     A composite key is concatenated the same way Cube does it (CAST + CONCAT, in
@@ -1228,11 +1234,13 @@ def primary_key_operand(cube_name, primary_keys, render=None):
             return f"{cube_name}.{pk}"
     if len(primary_keys) == 1:
         return render(primary_keys[0])
-    parts = ", ".join(f"CAST({render(pk)} AS VARCHAR)" for pk in primary_keys)
+    cast_type = "STRING" if source_dialect in ("BIGQUERY", "DATABRICKS") else "VARCHAR"
+    parts = ", ".join(f"CAST({render(pk)} AS {cast_type})" for pk in primary_keys)
     return f"CONCAT({parts})"
 
 
-def primary_key_count_expression(cube_name, primary_keys, filter_exprs=()):
+def primary_key_count_expression(cube_name, primary_keys, filter_exprs=(),
+                                 source_dialect=None):
     """The Ossie expression for Cube's bare `type: count` measure.
 
     Cube renders such a measure as `count(<pk>)` normally and
@@ -1242,7 +1250,8 @@ def primary_key_count_expression(cube_name, primary_keys, filter_exprs=()):
     load-bearing when there is -- making it the one static form that is correct in
     every join context.
     """
-    operand = filtered_operand(primary_key_operand(cube_name, primary_keys),
+    operand = filtered_operand(primary_key_operand(
+        cube_name, primary_keys, source_dialect=source_dialect),
                                filter_exprs)
     return f"COUNT(DISTINCT {operand})"
 

@@ -1152,11 +1152,11 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
         if decomposed:
             public_sql = _decompose_measure(
                 expr, spans, mname, target, measures_by_cube, plan,
-                name, reserved, refs)
+                name, reserved, refs, used)
             measure = {"name": mname, "sql": public_sql, "type": "number"}
         else:
             measure = _measure_from_expression(
-                expr, target, mname, stash, plan, refs)
+                expr, target, mname, stash, plan, refs, used)
         _apply_measure_metadata(metric, measure, stash, used,
                                 decomposed=decomposed)
         # Cube-only keys import found on the measure (`format`, `drill_members`,
@@ -1461,7 +1461,7 @@ def _span_target(refs, piece, fallback):
 
 
 def _decompose_measure(expr, spans, mname, fallback, measures_by_cube, plan,
-                       model_name, reserved, refs):
+                       model_name, reserved, refs, source_dialect=None):
     """Emit one `public: false` measure per aggregate; return the sql referencing them.
 
     Cube corrects for row multiplication per measure, keyed on the cube that measure
@@ -1495,7 +1495,7 @@ def _decompose_measure(expr, spans, mname, fallback, measures_by_cube, plan,
         taken.add(part_name.lower())
 
         part = _measure_from_expression(
-            piece, part_target, part_name, {}, plan, refs)
+            piece, part_target, part_name, {}, plan, refs, source_dialect)
         part["public"] = False
         part["meta"] = {"ossie": {"part_of": mname}}
         _place(measures_by_cube, part_target, part, model_name)
@@ -1535,7 +1535,7 @@ def _reference_tables(plan, cube_names):
         inline_sql_by_cube={c: p.inline_sql for c, p in plan.items()})
 
 
-def _measure_from_expression(expr, target, mname, stash, plan, refs):
+def _measure_from_expression(expr, target, mname, stash, plan, refs, source_dialect=None):
     """Turn an Ossie metric expression back into a structured Cube measure.
 
     `COUNT(DISTINCT <the cube's primary key>)` is Cube's bare `type: count` --
@@ -1554,7 +1554,8 @@ def _measure_from_expression(expr, target, mname, stash, plan, refs):
     """
     measure = {"name": mname}
     key = list(plan[target].primary_key) if target in plan else []
-    pk_operand = primary_key_operand(target, key) if key else None
+    pk_operand = (primary_key_operand(target, key, source_dialect=source_dialect)
+                  if key else None)
     mtype, operand, filters = classify_metric_expression(expr, pk_operand)
     declared = stash.get("type")
     if declared:
