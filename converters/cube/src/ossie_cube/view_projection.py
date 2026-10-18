@@ -615,7 +615,9 @@ def _reduced_measure(inliner, cubes, measure, cname, mname):
     out = _labels_of(measure)
     if snake(measure.get("type") or "") == "count" and measure.get("sql") is None:
         out["type"] = "count_distinct"
-        out["sql"] = _primary_key_sql(inliner, cubes, cname)
+        count_dialect = (parked_of(measure.get("meta")).get("dialect")
+                         or inliner._source_dialect)
+        out["sql"] = _primary_key_sql(inliner, cubes, cname, count_dialect)
     elif measure.get("sql") is not None:
         out["sql"] = inliner.rewrite(measure["sql"], cname, scope, measures=references)
     filters = [f for f in measure.get("filters") or []
@@ -649,17 +651,17 @@ def _refuse_windowing(measure, scope):
                 f"than the query's; an Ossie expression has no form for that")
 
 
-def _primary_key_sql(inliner, cubes, cname):
+def _primary_key_sql(inliner, cubes, cname, source_dialect=None):
     """Cube SQL for a cube's primary key: its columns, or its key dimensions' SQL."""
     cube = cubes[cname]
     keys = _primary_key_of(cube, cname)
     if "primary_key" in parked_of(cube.get("meta")):
         # Recorded by a previous export, and columns by construction.
         return primary_key_operand(cname, keys, lambda key: "{CUBE}." + key,
-                                   inliner._source_dialect)
+                                   source_dialect)
     return primary_key_operand(
         cname, keys, lambda key: inliner.dimension(cname, key),
-        inliner._source_dialect)
+        source_dialect)
 
 
 def _published_dimension(inliner, cubes, member):

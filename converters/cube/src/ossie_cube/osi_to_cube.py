@@ -1498,6 +1498,10 @@ def _decompose_measure(expr, spans, mname, fallback, measures_by_cube, plan,
             piece, part_target, part_name, {}, plan, refs, source_dialect)
         part["public"] = False
         part["meta"] = {"ossie": {"part_of": mname}}
+        if source_dialect and source_dialect != DIALECT_ANSI:
+            # A bare count has no SQL carrying its native string casts. Keep
+            # provenance on hidden parts too, so default reimport can rebuild it.
+            part["meta"]["ossie"]["dialect"] = source_dialect
         _place(measures_by_cube, part_target, part, model_name)
 
         out.append(refs.to_cube_sql(expr[cursor:start], fallback, context=expr))

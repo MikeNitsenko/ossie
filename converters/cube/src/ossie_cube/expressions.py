@@ -607,8 +607,13 @@ def _split_bigquery_quoted_paths(text):
         raw = text[token.start:token.end + 1]
         if token.token_type is TokenType.IDENTIFIER and "." in token.text \
                 and raw.startswith("`") and raw.endswith("`"):
-            text = (text[:token.start] + "`" + raw[1:-1].replace(".", "`.`")
-                    + "`" + text[token.end + 1:])
+            parts = raw[1:-1].split(".")
+            # A masked Cube alias must be followed directly by the dot when
+            # restored: `{CUBE}`.`amount` would hide the alias from the inliner
+            # and leave an empty quoted qualifier in ordinary import.
+            quoted = [part if i == 0 and _SENTINEL_RE.fullmatch(part)
+                      else f"`{part}`" for i, part in enumerate(parts)]
+            text = text[:token.start] + ".".join(quoted) + text[token.end + 1:]
     return text
 
 

@@ -455,3 +455,112 @@ def test_composite_count_uses_a_warehouse_string_type(project, dialect, cast_typ
         parse(restored_default)["metrics"][0]["expression"]
         == parse(out)["metrics"][0]["expression"]
     )
+
+
+@pytest.mark.parametrize("project", [False, True])
+@pytest.mark.parametrize("kind", ["dimension", "measure"])
+@pytest.mark.parametrize("alias", ["CUBE", "TABLE", "orders"])
+def test_bigquery_fully_quoted_masked_alias(project, kind, alias):
+    sql = f"`{{{alias}}}.payload.amount`"
+    files = _files(sql=sql) if kind == "measure" else _files(dimension_sql=sql)
+    out = _import(files, project, source_dialect="BIGQUERY")
+    assert_ossie_is_valid(out)
+    model = parse(out)
+    item = (
+        model["metrics"][0] if kind == "measure" else model["datasets"][0]["fields"][0]
+    )
+    expected = (
+        "MAX(orders.`payload`.`amount`)"
+        if kind == "measure"
+        else "`payload`.`amount`"
+        if project
+        else "`payload.amount`"
+    )
+    assert item["expression"]["dialects"][0]["expression"] == expected
+
+
+def _cross_dataset_composite_count(dialect):
+    def field(name):
+        return {
+            "name": name,
+            "datatype": "Integer",
+            "expression": {"dialects": [{"dialect": dialect, "expression": name}]},
+        }
+
+    expression = (
+        "SUM(orders.amount) / COUNT(DISTINCT CONCAT("
+        "CAST(users.id AS STRING), CAST(users.tenant AS STRING)))"
+    )
+    return {
+        "version": "0.2.0.dev0",
+        "name": "sales",
+        "datasets": [
+            {
+                "name": "orders",
+                "source": "db.public.orders",
+                "primary_key": ["id"],
+                "fields": [
+                    field("id"),
+                    field("amount"),
+                    field("user_id"),
+                    field("user_tenant"),
+                ],
+            },
+            {
+                "name": "users",
+                "source": "db.public.users",
+                "primary_key": ["id", "tenant"],
+                "fields": [field("id"), field("tenant")],
+            },
+        ],
+        "relationships": [
+            {
+                "name": "orders_users",
+                "from": "orders",
+                "to": "users",
+                "from_columns": ["user_id", "user_tenant"],
+                "to_columns": ["id", "tenant"],
+            }
+        ],
+        "metrics": [
+            {
+                "name": "ratio",
+                "expression": {
+                    "dialects": [{"dialect": dialect, "expression": expression}]
+                },
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_hidden_parts_keep_their_dialect_on_default_reimport(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    part = users["measures"][0]
+    assert part["type"] == "count"
+    restored, _ = convert_cube_to_ossie(files)
+    assert_ossie_is_valid(restored)
+    assert (
+        parse(restored)["metrics"][0]["expression"] == model["metrics"][0]["expression"]
+    )
+    assert part["meta"]["ossie"]["dialect"] == dialect
+
+
+@pytest.mark.parametrize("project", [False, True])
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_reprojected_count_uses_its_parked_dialect(project, dialect):
+    model = parse(_files()["model.yml"])
+    model["cubes"][0]["dimensions"].append(
+        {"name": "tenant", "type": "string", "sql": "tenant", "primary_key": True}
+    )
+    model["cubes"][0]["measures"] = [{"name": "value", "type": "count"}]
+    original = _import({"m.yml": dump_yaml(model)}, project, source_dialect=dialect)
+    files, _ = convert_ossie_to_cube(original)
+    restored, _, _ = convert_cube_view_to_ossie(files, "sales")
+    assert_ossie_is_valid(restored)
+    assert (
+        parse(restored)["metrics"][0]["expression"]
+        == parse(original)["metrics"][0]["expression"]
+    )
