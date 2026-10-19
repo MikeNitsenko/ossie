@@ -58,6 +58,7 @@ DIALECT_OSSIE_SQL = "OSSIE_SQL_2026"
 # which are query or calculation languages rather than warehouse SQL -- an expression
 # in one of those is not usable as a Cube `sql` at all.
 SQL_DIALECT_READERS = {
+    # None selects SQLGlot's generic SQL grammar, including its tokenizer.
     DIALECT_ANSI: None,
     "SNOWFLAKE": "snowflake",
     "DATABRICKS": "databricks",

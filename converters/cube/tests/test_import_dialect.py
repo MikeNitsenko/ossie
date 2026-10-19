@@ -29,6 +29,7 @@ from ossie_cube import (
 )
 from ossie_cube._common import dump_yaml
 from ossie_cube.cli import main
+from ossie_cube.import_dialect import validate_imported_expressions
 
 
 def _files(sql="amount", dimension_sql="id"):
@@ -629,3 +630,69 @@ def test_composite_count_uses_selected_expression_label(
     restored, _ = convert_cube_to_ossie(files)
     assert_ossie_is_valid(restored)
     assert parse(restored)["metrics"][0]["expression"] == model["metrics"][0]["expression"]
+
+
+@pytest.mark.parametrize("project", [False, True])
+def test_explicit_ansi_cli_preserves_literals_and_strips_comments(tmp_path, project):
+    source = tmp_path / "cube.yml"
+    source.write_text(
+        _files("CASE WHEN amount > 0 /* block */ THEN '-- literal' "
+               "ELSE '/* literal */' END -- trailing")["model.yml"]
+    )
+    dest = tmp_path / "ossie.yml"
+    args = [
+        "import", "-i", str(source), "-o", str(dest), "--source-dialect", "ANSI_SQL"
+    ]
+    if project:
+        args += ["--project", "--view", "sales"]
+    assert main(args) == 0
+    out = dest.read_text()
+    assert_ossie_is_valid(out)
+    entry = parse(out)["metrics"][0]["expression"]["dialects"][0]
+    assert entry["dialect"] == "ANSI_SQL"
+    assert " ".join(entry["expression"].split()) == (
+        "MAX(CASE WHEN orders.amount > 0 THEN '-- literal' ELSE '/* literal */' END)"
+    )
+
+
+@pytest.mark.parametrize(
+    "dialect", ["ANSI_SQL", "OSSIE_SQL_2026", "BIGQUERY", "DATABRICKS", "SNOWFLAKE"]
+)
+@pytest.mark.parametrize(
+    "sql", ["amount + 1", "amount", "update", "42", "'literal'", "COALESCE(amount, 0)"]
+)
+def test_emitted_scalar_expressions_validate_in_their_own_context(dialect, sql):
+    model = {
+        "metrics": [{"name": "value", "expression": {
+            "dialects": [{"dialect": dialect, "expression": sql}]
+        }}]
+    }
+    validate_imported_expressions(model)
+
+
+@pytest.mark.parametrize("dialect", ["ANSI_SQL", "BIGQUERY", "DATABRICKS", "SNOWFLAKE"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "amount; tax",
+        "; amount",
+        "+ ; amount",
+        "amount;;",
+        "amount; DROP TABLE orders",
+        "SELECT amount FROM orders",
+        "CREATE TABLE orders (id INT)",
+        "UPDATE orders SET amount = 0",
+        "amount AS renamed",
+        "amount FROM orders",
+        "",
+        "-- comment only",
+    ],
+)
+def test_emitted_sql_rejects_statements_and_select_clauses(dialect, sql):
+    model = {
+        "metrics": [{"name": "value", "expression": {
+            "dialects": [{"dialect": dialect, "expression": sql}]
+        }}]
+    }
+    with pytest.raises(ConversionError, match=f"metric 'value' \\({dialect}\\)"):
+        validate_imported_expressions(model)

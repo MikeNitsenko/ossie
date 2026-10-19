@@ -60,22 +60,22 @@ def validate_imported_expressions(model):
             sql = entry["expression"]
             reader = SQL_DIALECT_READERS.get(dialect)
             try:
-                try:
-                    statements = sqlglot.parse(sql, read=reader)
-                except (sqlglot.errors.ParseError, sqlglot.errors.TokenError):
-                    # Match the core validator's retry for bare column expressions.
-                    statements = sqlglot.parse(f"SELECT {sql}", read=reader)
-                count = sum(statement is not None for statement in statements)
-                if count != 1:
+                # Condition is SQLGlot's scalar grammar entry point, including
+                # arithmetic, literals, functions and bare column references.
+                # Parse once in that context: a statement parser can misread a
+                # column named `update`, while wrapping in SELECT could accept
+                # aliases or FROM clauses that are not scalar expressions.
+                # Keep the result list so multiple expressions cannot hide in
+                # the Block that parse_one returns for multiple statements.
+                statements = sqlglot.Dialect.get_or_raise(reader).parse_into(
+                    sqlglot.exp.Condition, sql
+                )
+                # Empty statement slots also matter: filtering them out would
+                # accept malformed fragments such as `; amount` or `+ ; amount`.
+                if len(statements) != 1 or statements[0] is None:
                     raise ConversionError(
-                        f"{scope} ({dialect}): expected a single SQL expression, "
-                        f"found {count} statements"
+                        f"{scope} ({dialect}): expected a single SQL expression"
                     )
-                # A single DDL/DML command is valid SQL, but cannot serve as a
-                # field or metric expression. Use the scalar-expression entry
-                # point after checking statement count (parse_one can return a
-                # Block for several statements).
-                sqlglot.parse_one(sql, read=reader, into=sqlglot.exp.Condition)
             except (sqlglot.errors.SqlglotError, RecursionError) as exc:
                 raise ConversionError(
                     f"{scope} ({dialect}): invalid SQL expression: "
