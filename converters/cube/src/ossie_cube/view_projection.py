@@ -58,7 +58,7 @@ from ._common import (
     write_stash,
 )
 from .converter_issues import IssueLog, IssueType
-from .cube_to_osi import (
+from .cube_to_ossie import (
     _CUBE_NATIVE_KEYS,
     _DIM_NATIVE_KEYS,
     _MEASURE_NATIVE_KEYS,

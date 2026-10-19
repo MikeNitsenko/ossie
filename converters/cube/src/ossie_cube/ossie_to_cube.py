@@ -42,6 +42,7 @@ from ._common import (
     DIALECT_ANSI,
     DIALECT_OSSIE_SQL,
     OSSIE_VERSION,
+    SQL_DIALECT_READERS,
     ConversionError,
     classify_metric_expression,
     cube_file,
@@ -1089,13 +1090,13 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
             _place(measures_by_cube, target, measure, name)
             continue
 
-        expr, used = pick_expression(metric.get("expression"), dialect)
+        expr, expression_dialect = pick_expression(metric.get("expression"), dialect)
         if expr is None:
             issues.add(IssueType.NO_USABLE_DIALECT, scope,
                        "no ANSI_SQL expression and no warehouse dialect Cube could "
                        "pass through; metric dropped")
             continue
-        _report_dialect_fallback(issues, scope, used, dialect)
+        _report_dialect_fallback(issues, scope, expression_dialect, dialect)
 
         missing = _references_a_dropped_field(expr, tables, cube_names, plan)
         if missing:
@@ -1152,12 +1153,13 @@ def _build_measures(model, cube_names, plan, tables, datasets, relationships,
         if decomposed:
             public_sql = _decompose_measure(
                 expr, spans, mname, target, measures_by_cube, plan,
-                name, reserved, refs, used)
+                name, reserved, refs, expression_dialect=expression_dialect)
             measure = {"name": mname, "sql": public_sql, "type": "number"}
         else:
             measure = _measure_from_expression(
-                expr, target, mname, stash, plan, refs, used)
-        _apply_measure_metadata(metric, measure, stash, used,
+                expr, target, mname, stash, plan, refs,
+                expression_dialect=expression_dialect)
+        _apply_measure_metadata(metric, measure, stash, expression_dialect,
                                 decomposed=decomposed)
         # Cube-only keys import found on the measure (`format`, `drill_members`,
         # `public`, ...) ride flat in the stash -- the same protocol dimensions
@@ -1461,7 +1463,7 @@ def _span_target(refs, piece, fallback):
 
 
 def _decompose_measure(expr, spans, mname, fallback, measures_by_cube, plan,
-                       model_name, reserved, refs, source_dialect=None):
+                       model_name, reserved, refs, *, expression_dialect=None):
     """Emit one `public: false` measure per aggregate; return the sql referencing them.
 
     Cube corrects for row multiplication per measure, keyed on the cube that measure
@@ -1495,13 +1497,14 @@ def _decompose_measure(expr, spans, mname, fallback, measures_by_cube, plan,
         taken.add(part_name.lower())
 
         part = _measure_from_expression(
-            piece, part_target, part_name, {}, plan, refs, source_dialect)
+            piece, part_target, part_name, {}, plan, refs,
+            expression_dialect=expression_dialect)
         part["public"] = False
         part["meta"] = {"ossie": {"part_of": mname}}
-        if source_dialect and source_dialect != DIALECT_ANSI:
+        if expression_dialect and expression_dialect != DIALECT_ANSI:
             # A bare count has no SQL carrying its native string casts. Keep
             # provenance on hidden parts too, so default reimport can rebuild it.
-            part["meta"]["ossie"]["dialect"] = source_dialect
+            part["meta"]["ossie"]["dialect"] = expression_dialect
         _place(measures_by_cube, part_target, part, model_name)
 
         out.append(refs.to_cube_sql(expr[cursor:start], fallback, context=expr))
@@ -1539,7 +1542,8 @@ def _reference_tables(plan, cube_names):
         inline_sql_by_cube={c: p.inline_sql for c, p in plan.items()})
 
 
-def _measure_from_expression(expr, target, mname, stash, plan, refs, source_dialect=None):
+def _measure_from_expression(expr, target, mname, stash, plan, refs, *,
+                             expression_dialect=None):
     """Turn an Ossie metric expression back into a structured Cube measure.
 
     `COUNT(DISTINCT <the cube's primary key>)` is Cube's bare `type: count` --
@@ -1558,7 +1562,13 @@ def _measure_from_expression(expr, target, mname, stash, plan, refs, source_dial
     """
     measure = {"name": mname}
     key = list(plan[target].primary_key) if target in plan else []
-    pk_operand = (primary_key_operand(target, key, source_dialect=source_dialect)
+    # This is the picked expression's label, not the export's preferred warehouse.
+    # Portable labels (e.g. OSSIE_SQL_2026) use the default VARCHAR key shape.
+    # A different explicit operand stays count_distinct and round-trips verbatim;
+    # only the matching canonical key can safely collapse to Cube's bare count.
+    warehouse_dialect = (expression_dialect
+                         if expression_dialect in SQL_DIALECT_READERS else None)
+    pk_operand = (primary_key_operand(target, key, source_dialect=warehouse_dialect)
                   if key else None)
     mtype, operand, filters = classify_metric_expression(expr, pk_operand)
     declared = stash.get("type")

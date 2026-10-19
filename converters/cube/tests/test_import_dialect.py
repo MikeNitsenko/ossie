@@ -564,3 +564,68 @@ def test_reprojected_count_uses_its_parked_dialect(project, dialect):
         parse(restored)["metrics"][0]["expression"]
         == parse(original)["metrics"][0]["expression"]
     )
+
+
+@pytest.mark.parametrize("project", [False, True])
+@pytest.mark.parametrize("dialect", ["SNOWFLAKE", "DATABRICKS"])
+@pytest.mark.parametrize(
+    ("sql", "expected"),
+    [
+        (
+            "DATEDIFF(day, started_at, ended_at)",
+            "MAX(DATEDIFF(day, orders.started_at, orders.ended_at))",
+        ),
+        (
+            "DATE_TRUNC(week, created_at)",
+            "MAX(DATE_TRUNC(week, orders.created_at))",
+        ),
+    ],
+)
+def test_cli_native_date_units_are_not_qualified(
+    tmp_path, project, dialect, sql, expected
+):
+    source = tmp_path / "cube.yml"
+    source.write_text(_files(sql)["model.yml"])
+    dest = tmp_path / "ossie.yml"
+    args = [
+        "import", "-i", str(source), "-o", str(dest), "--source-dialect", dialect
+    ]
+    if project:
+        args += ["--project", "--view", "sales"]
+    assert main(args) == 0
+    out = dest.read_text()
+    assert_ossie_is_valid(out)
+    assert parse(out)["metrics"][0]["expression"]["dialects"] == [
+        {"dialect": dialect, "expression": expected}
+    ]
+
+
+@pytest.mark.parametrize("dialect", ["ANSI_SQL", "OSSIE_SQL_2026", "BIGQUERY", "DATABRICKS"])
+@pytest.mark.parametrize("cast_type", ["STRING", "VARCHAR"])
+@pytest.mark.parametrize("decomposed", [False, True])
+@pytest.mark.parametrize("preferred", [None, "SNOWFLAKE"])
+def test_composite_count_uses_selected_expression_label(
+    dialect, cast_type, decomposed, preferred
+):
+    # SNOWFLAKE is absent from every expression: an export preference must not
+    # override the label actually picked, including portable expression labels.
+    model = _cross_dataset_composite_count(dialect)
+    expression = model["metrics"][0]["expression"]["dialects"][0]
+    expression["expression"] = expression["expression"].replace("STRING", cast_type)
+    if not decomposed:
+        expression["expression"] = expression["expression"].split(" / ")[1]
+    files, _ = convert_ossie_to_cube(dump_yaml(model), dialect=preferred)
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    count = users["measures"][0]
+    canonical_cast = "STRING" if dialect in ("BIGQUERY", "DATABRICKS") else "VARCHAR"
+    if cast_type == canonical_cast:
+        assert count["type"] == "count"
+        assert "sql" not in count
+    else:
+        # Retaining the explicit distinct operand is lossless even when it does
+        # not match the selected dialect's canonical bare-count representation.
+        assert count["type"] == "count_distinct"
+        assert f"AS {cast_type}" in count["sql"]
+    restored, _ = convert_cube_to_ossie(files)
+    assert_ossie_is_valid(restored)
+    assert parse(restored)["metrics"][0]["expression"] == model["metrics"][0]["expression"]
