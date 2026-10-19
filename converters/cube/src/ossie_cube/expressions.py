@@ -602,7 +602,10 @@ def _split_bigquery_quoted_paths(text):
     identifiers without source positions, preventing safe column qualification.
     Only identifier tokens are rewritten; dots in string literals stay intact.
     """
-    tokens = sqlglot.Dialect.get_or_raise("bigquery").tokenize(text)
+    try:
+        tokens = sqlglot.Dialect.get_or_raise("bigquery").tokenize(text)
+    except sqlglot.errors.SqlglotError as exc:
+        raise UnattributableSQL(str(exc).splitlines()[0]) from None
     for token in reversed(tokens):
         raw = text[token.start:token.end + 1]
         if token.token_type is TokenType.IDENTIFIER and "." in token.text \

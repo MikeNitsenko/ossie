@@ -20,10 +20,18 @@
 import sqlglot
 
 from ._common import (
+    DIALECT_ANSI,
     DIALECT_OSSIE_SQL,
     SQL_DIALECT_READERS,
     ConversionError,
 )
+
+# Portable Ossie SQL uses the generic ANSI reader when restored from metadata.
+# Keep it separate from the warehouse dialects accepted as source_dialect.
+_EXPRESSION_DIALECT_READERS = {
+    **SQL_DIALECT_READERS,
+    DIALECT_OSSIE_SQL: SQL_DIALECT_READERS[DIALECT_ANSI],
+}
 
 
 def validate_source_dialect(source_dialect):
@@ -55,10 +63,10 @@ def validate_imported_expressions(model):
     for scope, item in items:
         for entry in item.get("expression", {}).get("dialects", []):
             dialect = entry["dialect"]
-            if dialect not in SQL_DIALECT_READERS and dialect != DIALECT_OSSIE_SQL:
+            if dialect not in _EXPRESSION_DIALECT_READERS:
                 continue
             sql = entry["expression"]
-            reader = SQL_DIALECT_READERS.get(dialect)
+            reader = _EXPRESSION_DIALECT_READERS[dialect]
             try:
                 # Condition is SQLGlot's scalar grammar entry point, including
                 # arithmetic, literals, functions and bare column references.

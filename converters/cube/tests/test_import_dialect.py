@@ -29,6 +29,7 @@ from ossie_cube import (
 )
 from ossie_cube._common import dump_yaml
 from ossie_cube.cli import main
+from ossie_cube.expressions import UnattributableSQL, _split_bigquery_quoted_paths
 from ossie_cube.import_dialect import validate_imported_expressions
 
 
@@ -123,7 +124,7 @@ def test_dialect_survives_export_and_reimport(project, dialect):
 
 @pytest.mark.parametrize("project", [False, True])
 @pytest.mark.parametrize(
-    "dialect", ["MDX", "DAX", "HOLISTICS_AQL", "mysql", "", 1, [], {}]
+    "dialect", ["MDX", "DAX", "HOLISTICS_AQL", "OSSIE_SQL_2026", "mysql", "", 1, [], {}]
 )
 def test_only_spec_warehouse_dialects_are_accepted(project, dialect):
     with pytest.raises(ConversionError, match="Unsupported source dialect"):
@@ -670,7 +671,9 @@ def test_emitted_scalar_expressions_validate_in_their_own_context(dialect, sql):
     validate_imported_expressions(model)
 
 
-@pytest.mark.parametrize("dialect", ["ANSI_SQL", "BIGQUERY", "DATABRICKS", "SNOWFLAKE"])
+@pytest.mark.parametrize(
+    "dialect", ["ANSI_SQL", "OSSIE_SQL_2026", "BIGQUERY", "DATABRICKS", "SNOWFLAKE"]
+)
 @pytest.mark.parametrize(
     "sql",
     [
@@ -696,3 +699,16 @@ def test_emitted_sql_rejects_statements_and_select_clauses(dialect, sql):
     }
     with pytest.raises(ConversionError, match=f"metric 'value' \\({dialect}\\)"):
         validate_imported_expressions(model)
+
+
+@pytest.mark.parametrize("sql", ["`orders.amount", "'unterminated", "amount /* unclosed"])
+def test_bigquery_path_tokenization_raises_a_converter_attribution_error(sql):
+    with pytest.raises(UnattributableSQL):
+        _split_bigquery_quoted_paths(sql)
+
+
+@pytest.mark.parametrize("project", [False, True])
+@pytest.mark.parametrize("sql", ["`orders.amount", "'unterminated"])
+def test_bigquery_lexical_errors_have_measure_context(project, sql):
+    with pytest.raises(ConversionError, match="orders.value.*BIGQUERY"):
+        _import(_files(sql), project, source_dialect="BIGQUERY")
