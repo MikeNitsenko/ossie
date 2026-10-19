@@ -60,6 +60,7 @@ def validate_imported_expressions(model):
     items.extend(
         (f"metric '{metric['name']}'", metric) for metric in model.get("metrics", [])
     )
+    resolved_dialects = {}
     for scope, item in items:
         for entry in item.get("expression", {}).get("dialects", []):
             dialect = entry["dialect"]
@@ -68,6 +69,8 @@ def validate_imported_expressions(model):
             sql = entry["expression"]
             reader = _EXPRESSION_DIALECT_READERS[dialect]
             try:
+                if reader not in resolved_dialects:
+                    resolved_dialects[reader] = sqlglot.Dialect.get_or_raise(reader)
                 # Condition is SQLGlot's scalar grammar entry point, including
                 # arithmetic, literals, functions and bare column references.
                 # Parse once in that context: a statement parser can misread a
@@ -75,7 +78,7 @@ def validate_imported_expressions(model):
                 # aliases or FROM clauses that are not scalar expressions.
                 # Keep the result list so multiple expressions cannot hide in
                 # the Block that parse_one returns for multiple statements.
-                statements = sqlglot.Dialect.get_or_raise(reader).parse_into(
+                statements = resolved_dialects[reader].parse_into(
                     sqlglot.exp.Condition, sql
                 )
                 # Empty statement slots also matter: filtering them out would

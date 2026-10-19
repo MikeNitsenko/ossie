@@ -483,6 +483,11 @@ class _Inliner:
                 self._measures.add((cname, measure.get("name")))
         self._cache = {}
 
+    @property
+    def source_dialect(self):
+        """The SQL dialect selected for this projection."""
+        return self._source_dialect
+
     def dimension(self, cname, dname, stack=()):
         """A dimension's SQL with every reference inlined, relative to its own cube."""
         key = (cname, dname)
@@ -616,7 +621,7 @@ def _reduced_measure(inliner, cubes, measure, cname, mname):
     if snake(measure.get("type") or "") == "count" and measure.get("sql") is None:
         out["type"] = "count_distinct"
         count_dialect = (parked_of(measure.get("meta")).get("dialect")
-                         or inliner._source_dialect)
+                         or inliner.source_dialect)
         out["sql"] = _primary_key_sql(inliner, cubes, cname, count_dialect)
     elif measure.get("sql") is not None:
         out["sql"] = inliner.rewrite(measure["sql"], cname, scope, measures=references)
