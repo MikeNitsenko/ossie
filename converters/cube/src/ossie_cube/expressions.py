@@ -64,13 +64,13 @@ def parse(expr, source_dialect=None):
         return None
 
 
-def is_single_aggregate(expr):
+def is_single_aggregate(expr, source_dialect=None):
     """True if the whole expression is exactly one aggregate call.
 
     Those already map to a structured Cube measure (`type: sum` + `sql`), so they
     are never decomposed.
     """
-    tree = parse(expr)
+    tree = parse(expr, source_dialect)
     return tree is not None and isinstance(tree, _AGGREGATE_NODES)
 
 
@@ -90,7 +90,7 @@ _WITHIN_GROUP_RE = re.compile(r"\s*WITHIN\s+GROUP\s*\(", re.IGNORECASE)
 _OVER_RE = re.compile(r"\s*OVER\b", re.IGNORECASE)
 
 
-def aggregate_spans(expr):
+def aggregate_spans(expr, source_dialect=None):
     """The outermost aggregate calls in `expr`, as (start, end) offsets.
 
     Offsets index the original string so a caller can substitute each span in place.
@@ -109,17 +109,32 @@ def aggregate_spans(expr):
     into the literal.
     """
     text = str(expr)
-    if parse(text) is None or is_single_aggregate(text):
+    if parse(text, source_dialect) is None or is_single_aggregate(text, source_dialect):
         return []
-    return _scan_aggregates(text)
+    return _scan_aggregates(text, source_dialect)
 
 
-def _scan_aggregates(text):
+def _expression_quote_mask(text, source_dialect):
+    """Protect native literals, quoted identifiers and comments during scanning."""
+    if source_dialect is None:
+        return quoted_char_mask(text)
+    mask = [True] * len(text)
+    for token in sqlglot.Dialect.get_or_raise(
+            SQL_DIALECT_READERS.get(source_dialect)).tokenize(text):
+        raw = text[token.start:token.end + 1]
+        if token.token_type.name.endswith("STRING") or raw.startswith(('"', "`")):
+            continue
+        mask[token.start:token.end + 1] = [False] * (token.end - token.start + 1)
+    return mask
+
+
+def _scan_aggregates(text, source_dialect=None):
     """Every outermost aggregate call in `text`, as (start, end) offsets."""
-    if parse(text) is None:
+    if parse(text, source_dialect) is None:
         return []
     candidates = []
-    quoted = quoted_char_mask(text)
+    quoted = _expression_quote_mask(text, source_dialect)
+    structure = "".join(" " if quoted[i] else ch for i, ch in enumerate(text))
     for match in _CALL_NAME_RE.finditer(text):
         start = match.start()
         if quoted[start]:
@@ -131,14 +146,14 @@ def _scan_aggregates(text):
             probe += 1
         if probe >= len(text) or text[probe] != "(":
             continue
-        close = _match_paren(text, probe)
+        close = _match_paren(text, probe, quoted)
         if close is None:
             continue
-        end = _end_of_call(text, close + 1)
+        end = _end_of_call(structure, close + 1, quoted)
         # Confirm the slice against sqlglot: that is what separates an aggregate from
         # a scalar call (ROUND, COALESCE, CAST), a UDF, and a window function.
-        if _is_modelled_aggregate(parse(text[start:end])) \
-                and not _OVER_RE.match(text, end):
+        if _is_modelled_aggregate(parse(text[start:end], source_dialect)) \
+                and not _OVER_RE.match(structure, end):
             candidates.append((start, end))
 
     # Drop any span contained within another: only the outermost becomes a measure.
@@ -151,7 +166,7 @@ def _scan_aggregates(text):
     return out
 
 
-def _end_of_call(text, end):
+def _end_of_call(text, end, mask=None):
     """Where a call's span really ends: past a trailing `WITHIN GROUP (...)`, if any.
 
     An ordered-set aggregate carries its value-bearing column in the ORDER BY -- on
@@ -164,13 +179,13 @@ def _end_of_call(text, end):
     match = _WITHIN_GROUP_RE.match(text, end)
     if not match:
         return end
-    close = _match_paren(text, match.end() - 1)
+    close = _match_paren(text, match.end() - 1, mask)
     return end if close is None else close + 1
 
 
-def _match_paren(text, open_at):
+def _match_paren(text, open_at, mask=None):
     """Index of the `)` closing the `(` at `open_at`, honouring quotes."""
-    mask = quoted_char_mask(text)
+    mask = quoted_char_mask(text) if mask is None else mask
     depth = 0
     for i in range(open_at, len(text)):
         if mask[i]:
@@ -333,7 +348,7 @@ def unsafe_aggregate_heads(expr, source_dialect=None):
     return heads, unqualified
 
 
-def unsplittable_aggregate_datasets(expr):
+def unsplittable_aggregate_datasets(expr, source_dialect=None):
     """Datasets read by an aggregate that decomposition has to leave where it is.
 
     The classifier recognizes one shape more than decomposition acts on, and the
@@ -354,7 +369,7 @@ def unsplittable_aggregate_datasets(expr):
     Returns the dataset names as written. An empty set when nothing is stranded, or
     when the expression does not parse (the caller is already conservative there).
     """
-    tree = parse(expr)
+    tree = parse(expr, source_dialect)
     if tree is None:
         return set()
     # Identity, not equality: two `SUM(x)` nodes in one expression compare equal, and
@@ -365,7 +380,8 @@ def unsplittable_aggregate_datasets(expr):
     for scope in _outermost_aggregate_scopes(tree):
         if _is_modelled_aggregate(scope) and id(scope) not in windowed:
             continue
-        stranded |= {column.table for column in scope.find_all(exp.Column)
+        stranded |= {column.parts[0].name if source_dialect is not None else column.table
+                     for column in scope.find_all(exp.Column)
                      if column.table}
     return stranded
 
@@ -413,7 +429,7 @@ def _mask_references(text):
     return masked.replace("\x00lb\x00", "\\{").replace("\x00rb\x00", "\\}"), saved
 
 
-def unqualified_column_names(sql_text):
+def unqualified_column_names(sql_text, source_dialect=None):
     """The bare (unqualified, unquoted) column names in a SQL snippet, or None.
 
     Parser-based on purpose: only sqlglot can tell a column from a keyword, a
@@ -422,7 +438,7 @@ def unqualified_column_names(sql_text):
     text does not parse, and the caller should leave it alone.
     """
     masked, _ = _mask_references(str(sql_text))
-    tree = parse(masked)
+    tree = parse(masked, source_dialect)
     if tree is None:
         return None
     names = set()

@@ -229,6 +229,11 @@ Failing those, export falls back to the **first** dialect on offer that is wareh
 reports it. The record matters: without it re-import would label vendor-specific SQL as
 `ANSI_SQL` and mislead the next converter.
 
+Export uses the chosen expression's grammar to locate aggregates and resolve native
+quoted references. A composite metric's aggregates stay on the datasets they read,
+so Cube can apply its per-cube fan-out correction. Literals, comments and window
+frames are preserved during this analysis.
+
 Cube holds one `sql` per member, so an expression offering **several** dialects cannot
 keep its alternatives natively — the whole expression object is parked and restored, since
 nothing less brings them back. This is what

@@ -712,3 +712,163 @@ def test_bigquery_path_tokenization_raises_a_converter_attribution_error(sql):
 def test_bigquery_lexical_errors_have_measure_context(project, sql):
     with pytest.raises(ConversionError, match="orders.value.*BIGQUERY"):
         _import(_files(sql), project, source_dialect="BIGQUERY")
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+@pytest.mark.parametrize("quoted", ["own", "foreign", "both"])
+@pytest.mark.parametrize("preferred", [None, "SNOWFLAKE"])
+def test_native_quoted_composite_metrics_keep_aggregates_on_their_own_cubes(
+    dialect, quoted, preferred
+):
+    model = _cross_dataset_composite_count(dialect)
+    canonical = model["metrics"][0]["expression"]
+    expected = canonical["dialects"][0]["expression"]
+    sql = expected
+    if quoted in ("own", "both"):
+        sql = sql.replace("orders.amount", "orders.`amount`")
+    if quoted in ("foreign", "both"):
+        sql = sql.replace("users.id", "`users`.`id`")
+        sql = sql.replace("users.tenant", "users.`tenant`")
+    canonical["dialects"][0]["expression"] = sql
+    files, _ = convert_ossie_to_cube(dump_yaml(model), dialect=preferred)
+    orders = parse(files["model/cubes/orders.yml"])["cubes"][0]
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    own_part, public = orders["measures"]
+    foreign_part = users["measures"][0]
+    assert own_part["type"] == "sum"
+    assert foreign_part["type"] in ("count", "count_distinct")
+    assert not own_part["public"] and not foreign_part["public"]
+    assert "{users.ratio_part_2}" in public["sql"]
+    assert "SUM(" not in public["sql"]
+    assert "`" not in own_part["sql"]  # resolves the declared dimension/column
+    restored, _ = convert_cube_to_ossie(files, source_dialect=dialect)
+    assert_ossie_is_valid(restored)
+    assert parse(restored)["metrics"][0]["expression"]["dialects"] == [
+        {"dialect": dialect, "expression": expected}
+    ]
+    second, _ = convert_ossie_to_cube(restored)
+    assert parse(second["model/cubes/users.yml"])["cubes"][0]["measures"][0]["type"] == "count"
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+@pytest.mark.parametrize("column", ["credit score", "credit.score"])
+def test_native_raw_quoted_columns_are_qualified_on_the_part_cube(dialect, column):
+    model = _cross_dataset_composite_count(dialect)
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        f"SUM(orders.`amount`) / SUM(users.`{column}`)"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    assert users["measures"][0]["type"] == "sum"
+    assert users["measures"][0]["sql"] == f"{{CUBE}}.`{column}`"
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "'users.`id` SUM(users.`tenant`)'",
+        r"'it\'s users.id orders.amount SUM(users.tenant)'",
+        r"'it\'s users.`id` SUM(users.`tenant`)'",
+        "'''users.`id` SUM(users.`tenant`)'''",
+    ],
+)
+def test_native_aggregate_scanning_and_reference_rewriting_preserve_literals(dialect, literal):
+    model = _cross_dataset_composite_count(dialect)
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "SUM(orders.`amount`) / COUNT(DISTINCT users.`id`) "
+        f"+ SUM(orders.`amount`) + LENGTH({literal})"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    orders = parse(files["model/cubes/orders.yml"])["cubes"][0]
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    assert len(orders["measures"]) == 3
+    assert len(users["measures"]) == 1
+    assert orders["measures"][-1]["sql"].endswith(f"LENGTH({literal})")
+    assert all(m["sql"] == "{CUBE}.amount" for m in orders["measures"][:-1])
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_native_unsplittable_foreign_aggregate_is_reported(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "SUM(orders.`amount`) + UNKNOWN_AGG(users.`id`)"
+    )
+    _, issues = convert_ossie_to_cube(dump_yaml(model))
+    assert any("cannot be lifted onto its own cube" in issue.detail for issue in issues)
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_native_quoted_reference_to_a_dropped_field_drops_the_metric(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    model["datasets"][1]["fields"][0]["expression"]["dialects"] = [
+        {"dialect": "DAX", "expression": "[id]"}
+    ]
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "SUM(orders.`amount`) + SUM(users.`id`)"
+    )
+    files, issues = convert_ossie_to_cube(dump_yaml(model))
+    assert all(not parse(y)["cubes"][0].get("measures") for p, y in files.items() if "/cubes/" in p)
+    assert any("users.id" in issue.detail and "dropped" in issue.detail for issue in issues)
+
+
+@cube_gate
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_native_quoted_composite_metric_exports_to_cube_compiler(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "SUM(orders.`amount`) / COUNT(DISTINCT users.`id`)"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    assert_cube_compiles(files, f"{dialect} quoted cross-dataset decomposition")
+
+
+def test_bigquery_fully_quoted_export_references_keep_their_dataset():
+    model = _cross_dataset_composite_count("BIGQUERY")
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "SUM(`orders.amount`) / SUM(`users.credit score`)"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    orders = parse(files["model/cubes/orders.yml"])["cubes"][0]
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    assert orders["measures"][0]["type"] == "sum"
+    assert users["measures"][0]["type"] == "sum"
+    assert users["measures"][0]["sql"] == "{CUBE}.`credit score`"
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_native_window_aggregate_with_a_comment_is_not_split(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "SUM(orders.`amount`) + SUM(users.`id`) /* keep the frame */ "
+        "OVER (PARTITION BY users.`tenant`)"
+    )
+    files, issues = convert_ossie_to_cube(dump_yaml(model))
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    assert not users.get("measures")
+    assert any("cannot be lifted onto its own cube" in issue.detail for issue in issues)
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_native_raw_quoted_column_escapes_literal_cube_braces(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "SUM(orders.`amount`) / SUM(users.`{credit}`)"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    assert users["measures"][0]["sql"] == r"{CUBE}.`\{credit\}`"
+
+
+@pytest.mark.parametrize("dialect", ["BIGQUERY", "DATABRICKS"])
+def test_native_decomposition_does_not_rewrite_references_inside_comments(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    comment = "/* users.missing SUM(users.`tenant`) */"
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        f"SUM(orders.`amount`) / COUNT(DISTINCT users.`id`) {comment}"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    orders = parse(files["model/cubes/orders.yml"])["cubes"][0]
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    assert len(orders["measures"]) == 2 and len(users["measures"]) == 1
+    assert orders["measures"][-1]["sql"].endswith(comment)
