@@ -75,6 +75,12 @@ def _import(files, project, **kwargs):
     [
         ("ANSI_SQL", "amount + 1", "id", "MAX(orders.amount + 1)"),
         (
+            "ANSI_SQL",
+            "DATEDIFF(day, started_at, ended_at)",
+            "id",
+            "MAX(DATEDIFF(day, orders.started_at, orders.ended_at))",
+        ),
+        (
             "BIGQUERY",
             "SAFE_DIVIDE(`gross value`, quantity)",
             "{CUBE}.`order-id`",
@@ -680,7 +686,10 @@ def test_emitted_scalar_expressions_validate_in_their_own_context(dialect, sql):
         "amount; tax",
         "; amount",
         "+ ; amount",
+        "amount;",
+        "amount; -- trailing",
         "amount;;",
+        "*",
         "amount; DROP TABLE orders",
         "SELECT amount FROM orders",
         "CREATE TABLE orders (id INT)",
@@ -699,6 +708,23 @@ def test_emitted_sql_rejects_statements_and_select_clauses(dialect, sql):
     }
     with pytest.raises(ConversionError, match=f"metric 'value' \\({dialect}\\)"):
         validate_imported_expressions(model)
+
+
+@pytest.mark.parametrize("sql", [None, 5, ["amount"]])
+def test_non_string_restored_expression_is_a_conversion_error(sql):
+    model = {
+        "metrics": [{"name": "value", "expression": {
+            "dialects": [{"dialect": "ANSI_SQL", "expression": sql}]
+        }}]
+    }
+    with pytest.raises(ConversionError, match="metric 'value' .*must be a string"):
+        validate_imported_expressions(model)
+
+
+def test_restored_expression_without_a_dialect_stays_opaque():
+    validate_imported_expressions(
+        {"metrics": [{"name": "value", "expression": {"dialects": [{"expression": "x"}]}}]}
+    )
 
 
 @pytest.mark.parametrize("sql", ["`orders.amount", "'unterminated", "amount /* unclosed"])
@@ -872,3 +898,51 @@ def test_native_decomposition_does_not_rewrite_references_inside_comments(dialec
     users = parse(files["model/cubes/users.yml"])["cubes"][0]
     assert len(orders["measures"]) == 2 and len(users["measures"]) == 1
     assert orders["measures"][-1]["sql"].endswith(comment)
+
+
+@pytest.mark.parametrize(
+    ("column", "expected"),
+    [
+        ("`orders.payload`.amount", "{CUBE}.`payload`.`amount`"),
+        ("`orders.payload.amount`", "{CUBE}.`payload`.`amount`"),
+        ("orders.`payload.amount`", "{CUBE}.`payload.amount`"),
+    ],
+)
+def test_bigquery_quoted_path_export_keeps_every_part(column, expected):
+    model = _cross_dataset_composite_count("BIGQUERY")
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = f"MAX({column})"
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    orders = parse(files["model/cubes/orders.yml"])["cubes"][0]
+    assert orders["measures"][0]["sql"] == expected
+
+
+def test_bigquery_quoted_path_is_rewritten_beside_its_unquoted_spelling():
+    model = _cross_dataset_composite_count("BIGQUERY")
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "MAX(users.tenant || `users.tenant`)"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    users = parse(files["model/cubes/users.yml"])["cubes"][0]
+    assert users["measures"][0]["sql"] == "{CUBE}.tenant || {CUBE}.tenant"
+
+
+@pytest.mark.parametrize("dialect", ["ANSI_SQL", "SNOWFLAKE"])
+def test_portable_decomposition_does_not_rewrite_references_inside_comments(dialect):
+    model = _cross_dataset_composite_count(dialect)
+    comment = "/* users.missing SUM(users.tenant) */"
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        f"SUM(orders.amount) / COUNT(DISTINCT users.id) {comment}"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    orders = parse(files["model/cubes/orders.yml"])["cubes"][0]
+    assert orders["measures"][-1]["sql"].endswith(comment)
+
+
+def test_snowflake_dollar_quoted_literal_is_not_rewritten():
+    model = _cross_dataset_composite_count("SNOWFLAKE")
+    model["metrics"][0]["expression"]["dialects"][0]["expression"] = (
+        "MAX(orders.amount) || $$ per users.id $$"
+    )
+    files, _ = convert_ossie_to_cube(dump_yaml(model))
+    orders = parse(files["model/cubes/orders.yml"])["cubes"][0]
+    assert orders["measures"][0]["sql"] == "MAX({CUBE}.amount) || $$ per users.id $$"

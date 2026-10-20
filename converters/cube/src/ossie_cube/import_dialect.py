@@ -65,15 +65,22 @@ def validate_imported_expressions(model):
     )
     for scope, item in items:
         for entry in item.get("expression", {}).get("dialects", []):
-            dialect = entry["dialect"]
+            dialect = entry.get("dialect")
             reader = _EXPRESSION_DIALECTS.get(dialect)
             if reader is None:
                 continue
+            sql = entry.get("expression")
+            if not isinstance(sql, str):
+                raise ConversionError(f"{scope} ({dialect}): expression must be a string")
             try:
                 # A scalar Condition parse rejects SELECT-only syntax; the statement
-                # list exposes extra or empty statements (`; amount`).
-                statements = reader.parse_into(sqlglot.exp.Condition, entry["expression"])
-                if len(statements) != 1 or statements[0] is None:
+                # list exposes extra or empty statements (`; amount`). A lone trailing
+                # `;` and a bare `*` still parse as one Condition, so are checked apart.
+                statements = reader.parse_into(sqlglot.exp.Condition, sql)
+                if (len(statements) != 1 or statements[0] is None
+                        or isinstance(statements[0], sqlglot.exp.Star)
+                        or any(token.token_type is sqlglot.TokenType.SEMICOLON
+                               for token in reader.tokenize(sql))):
                     raise ConversionError(
                         f"{scope} ({dialect}): expected a single SQL expression"
                     )

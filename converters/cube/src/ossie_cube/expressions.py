@@ -41,7 +41,8 @@ import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.tokens import TokenType
 
-from ._common import SQL_DIALECT_READERS, quoted_char_mask, sub_outside_quotes
+from ._common import (DIALECT_ANSI, SQL_DIALECT_READERS, quoted_char_mask,
+                      sub_outside_quotes)
 
 # sqlglot node types for the aggregates this converter maps to a Cube measure type.
 # `Count` covers COUNT / COUNT(DISTINCT x); ApproxDistinct covers
@@ -651,9 +652,11 @@ def qualify_column_paths(cube_sql, own_cube=None, cube_names=(), source_dialect=
     fails or misreads a unit argument. Only positions are read and the text is never
     regenerated, so which grammar reads it does not matter. Comments are dropped.
 
-    With an explicit `source_dialect`, use only its grammar. In particular its
+    With an explicit warehouse `source_dialect`, use only its grammar. In particular its
     reading of unit arguments and array/struct syntax is authoritative, so the
-    heuristics used to choose an implicit grammar must not override it.
+    heuristics used to choose an implicit grammar must not override it. ANSI_SQL names
+    no warehouse grammar, so it keeps those heuristics: the generic grammar alone
+    reads `DATEDIFF(day, a, b)` with `day` as a column.
 
     Raises UnattributableSQL saying why when the columns cannot be attributed statically.
     """
@@ -662,12 +665,12 @@ def qualify_column_paths(cube_sql, own_cube=None, cube_names=(), source_dialect=
         masked = _split_bigquery_quoted_paths(masked)
     # The positions sqlglot reports are into the text it parsed, so it gets no other.
     masked = masked.strip()
-    dialects = (_READINGS if source_dialect is None
-                else (SQL_DIALECT_READERS[source_dialect],))
+    native = source_dialect not in (None, DIALECT_ANSI)
+    dialects = (SQL_DIALECT_READERS[source_dialect],) if native else _READINGS
     readings = [t for t in (_parse_as(masked, d) for d in dialects) if t is not None]
     if not readings:
         raise UnattributableSQL("it does not parse")
-    tree = (readings[0] if source_dialect is not None
+    tree = (readings[0] if native
             else next((t for t in readings if not _misread(t, masked)), None))
     if tree is None:
         raise UnattributableSQL(

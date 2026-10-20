@@ -1219,8 +1219,6 @@ def _native_columns(text, source_dialect):
 
 def _mask_native_literals(text, source_dialect, substitutions):
     """Hide native literals and comments from portable identifier rewrites."""
-    if source_dialect not in BACKTICK_DIALECTS:
-        return text
     try:
         tokens = native_tokens(text, source_dialect)
     except UnattributableSQL:
@@ -1383,16 +1381,22 @@ class _MetricReferences:
                             and token.token_type is sqlglot.TokenType.IDENTIFIER
                             else [token.text])
                 for i, token in enumerate(tokens):
+                    if i and tokens[i - 1].text == ".":
+                        continue  # the middle of a longer path
                     found, last = names(token), i
                     while last + 2 < len(tokens) and tokens[last + 1].text == ".":
                         last += 2
                         found += names(tokens[last])
-                    if found != wanted:
+                    # Only a run holding a quoted dotted identifier lost its positions;
+                    # an unquoted spelling of the same path is another column node.
+                    if found != wanted or all(
+                            len(names(t)) == 1 for t in tokens[i:last + 1:2]):
                         continue
                     start, end = token.start, tokens[last].end
-                    if last > i:
+                    if len(names(token)) == 1:
                         tail_start = tokens[i + 2].start
                     else:
+                        # The head shares its token with the tail's first parts.
                         tail = ".".join(sqlglot.exp.Identifier(
                             this=p.name, quoted=True).sql(dialect="bigquery")
                             for p in parts[1:])
