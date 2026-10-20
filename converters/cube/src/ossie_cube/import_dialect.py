@@ -26,11 +26,14 @@ from ._common import (
     ConversionError,
 )
 
-# Portable Ossie SQL uses the generic ANSI reader when restored from metadata.
-# Keep it separate from the warehouse dialects accepted as source_dialect.
-_EXPRESSION_DIALECT_READERS = {
-    **SQL_DIALECT_READERS,
-    DIALECT_OSSIE_SQL: SQL_DIALECT_READERS[DIALECT_ANSI],
+# Portable Ossie SQL restored from metadata is read by the generic ANSI reader; it is
+# not a warehouse dialect, so it stays out of the accepted source dialects.
+_EXPRESSION_DIALECTS = {
+    label: sqlglot.Dialect.get_or_raise(reader)
+    for label, reader in {
+        **SQL_DIALECT_READERS,
+        DIALECT_OSSIE_SQL: SQL_DIALECT_READERS[DIALECT_ANSI],
+    }.items()
 }
 
 
@@ -60,29 +63,16 @@ def validate_imported_expressions(model):
     items.extend(
         (f"metric '{metric['name']}'", metric) for metric in model.get("metrics", [])
     )
-    resolved_dialects = {}
     for scope, item in items:
         for entry in item.get("expression", {}).get("dialects", []):
             dialect = entry["dialect"]
-            if dialect not in _EXPRESSION_DIALECT_READERS:
+            reader = _EXPRESSION_DIALECTS.get(dialect)
+            if reader is None:
                 continue
-            sql = entry["expression"]
-            reader = _EXPRESSION_DIALECT_READERS[dialect]
             try:
-                if reader not in resolved_dialects:
-                    resolved_dialects[reader] = sqlglot.Dialect.get_or_raise(reader)
-                # Condition is SQLGlot's scalar grammar entry point, including
-                # arithmetic, literals, functions and bare column references.
-                # Parse once in that context: a statement parser can misread a
-                # column named `update`, while wrapping in SELECT could accept
-                # aliases or FROM clauses that are not scalar expressions.
-                # Keep the result list so multiple expressions cannot hide in
-                # the Block that parse_one returns for multiple statements.
-                statements = resolved_dialects[reader].parse_into(
-                    sqlglot.exp.Condition, sql
-                )
-                # Empty statement slots also matter: filtering them out would
-                # accept malformed fragments such as `; amount` or `+ ; amount`.
+                # A scalar Condition parse rejects SELECT-only syntax; the statement
+                # list exposes extra or empty statements (`; amount`).
+                statements = reader.parse_into(sqlglot.exp.Condition, entry["expression"])
                 if len(statements) != 1 or statements[0] is None:
                     raise ConversionError(
                         f"{scope} ({dialect}): expected a single SQL expression"

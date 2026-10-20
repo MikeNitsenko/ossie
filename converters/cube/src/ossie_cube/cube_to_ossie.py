@@ -513,6 +513,15 @@ def parked_of(meta):
     return unescape_braces_from_cube(meta.get("ossie") or {})
 
 
+def measure_dialect(measure, source_dialect):
+    """The dialect a previous export parked on `measure`, else `source_dialect`.
+
+    A bare count has no SQL carrying its key casts, so the parked label must still
+    pick them when the next import omits --source-dialect.
+    """
+    return parked_of(measure.get("meta")).get("dialect") or source_dialect
+
+
 def _meta_without_ai_context(meta):
     """The part of a Cube `meta` with no Ossie home, for the stash.
 
@@ -1514,13 +1523,9 @@ class _MeasureResolver:
                 f"custom_extensions only",
                 IssueType.PARKED_IN_META)
         if mtype == "count" and sql is None:
-            # Export can collapse a native composite-key count to a bare Cube
-            # count. Its parked dialect must still control the regenerated casts
-            # when the next import omits --source-dialect.
-            count_dialect = (parked_of(measure.get("meta")).get("dialect")
-                             or self.source_dialect)
             return primary_key_count_expression(
-                cname, self._pk.get(cname) or [], filter_exprs, count_dialect)
+                cname, self._pk.get(cname) or [], filter_exprs,
+                measure_dialect(measure, self.source_dialect))
         if sql is None:
             raise ConversionError(
                 f"measure '{scope}': type '{mtype}' requires 'sql'")
@@ -2035,7 +2040,7 @@ def _convert_measure(cname, mname, metric_name, measure, context):
         predicted, _, predicted_filters = classify_metric_expression(
             expr, _pk_operand_of(
                 cname, context.pk_by_cube,
-                parked_of(measure.get("meta")).get("dialect") or resolver.source_dialect))
+                measure_dialect(measure, resolver.source_dialect)))
         if predicted != mtype:
             # Regeneration would classify the expression as another Cube type that
             # computes the same value -- a `type: number` measure whose sql is a

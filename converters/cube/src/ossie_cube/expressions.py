@@ -119,8 +119,7 @@ def _expression_quote_mask(text, source_dialect):
     if source_dialect is None:
         return quoted_char_mask(text)
     mask = [True] * len(text)
-    for token in sqlglot.Dialect.get_or_raise(
-            SQL_DIALECT_READERS.get(source_dialect)).tokenize(text):
+    for token in native_tokens(text, source_dialect):
         raw = text[token.start:token.end + 1]
         if token.token_type.name.endswith("STRING") or raw.startswith(('"', "`")):
             continue
@@ -290,7 +289,7 @@ def _aggregates_distinct(node):
     return any(isinstance(arg, exp.Distinct) for arg in arguments)
 
 
-def unsafe_aggregate_datasets(expr, source_dialect=None):
+def unsafe_aggregate_datasets(expr):
     """Which datasets each non-idempotent aggregate in `expr` reads.
 
     Returns `(datasets, unqualified)` -- the dataset names appearing inside an unsafe
@@ -305,7 +304,7 @@ def unsafe_aggregate_datasets(expr, source_dialect=None):
     expression went unattributed: `SUM(orders.amount) + STDDEV(users.ltv)` reported only
     `orders`.
     """
-    tree = parse(expr, source_dialect)
+    tree = parse(expr)
     if tree is None:
         return None
     datasets, unqualified = set(), False
@@ -529,6 +528,15 @@ class UnattributableSQL(ValueError):
     """Cube SQL whose columns cannot be attributed to a dataset statically."""
 
 
+def native_tokens(text, source_dialect):
+    """`text` tokenized by `source_dialect`'s reader; UnattributableSQL when it fails."""
+    try:
+        return sqlglot.Dialect.get_or_raise(
+            SQL_DIALECT_READERS.get(source_dialect)).tokenize(text)
+    except sqlglot.errors.SqlglotError as exc:
+        raise UnattributableSQL(str(exc).splitlines()[0]) from None
+
+
 def _parse_as(text, dialect):
     """`text` parsed as `dialect`, or None when it does not parse as that."""
     try:
@@ -570,13 +578,8 @@ def strip_sql_comments(sql, source_dialect=None):
         # Native token spans keep raw/triple-quoted literals and identifiers intact.
         # Everything between tokens is whitespace or a comment. Tokenizing first
         # also rejects unterminated comments instead of silently deleting them.
-        try:
-            tokens = sqlglot.Dialect.get_or_raise(
-                SQL_DIALECT_READERS[source_dialect]).tokenize(text)
-        except sqlglot.errors.SqlglotError as exc:
-            raise UnattributableSQL(str(exc).splitlines()[0]) from None
         out, cursor = [], 0
-        for token in tokens:
+        for token in native_tokens(text, source_dialect):
             out.append(re.sub(r"\S", " ", text[cursor:token.start]))
             out.append(text[token.start:token.end + 1])
             cursor = token.end + 1
@@ -618,11 +621,7 @@ def _split_bigquery_quoted_paths(text):
     identifiers without source positions, preventing safe column qualification.
     Only identifier tokens are rewritten; dots in string literals stay intact.
     """
-    try:
-        tokens = sqlglot.Dialect.get_or_raise("bigquery").tokenize(text)
-    except sqlglot.errors.SqlglotError as exc:
-        raise UnattributableSQL(str(exc).splitlines()[0]) from None
-    for token in reversed(tokens):
+    for token in reversed(native_tokens(text, "BIGQUERY")):
         raw = text[token.start:token.end + 1]
         if token.token_type is TokenType.IDENTIFIER and "." in token.text \
                 and raw.startswith("`") and raw.endswith("`"):

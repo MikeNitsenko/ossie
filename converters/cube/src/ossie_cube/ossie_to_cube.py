@@ -32,12 +32,14 @@ Usage (CLI):
 """
 
 import dataclasses
+import functools
 import re
 
 import sqlglot
 
 from ._common import (
     AGG_TO_RESULT_DATATYPE,
+    BACKTICK_DIALECTS,
     CALCULATED_MEASURE_TYPES,
     DATATYPE_TO_DIM_TYPE,
     DEFAULT_DATATYPE_FOR_CUBE_TYPE,
@@ -45,7 +47,6 @@ from ._common import (
     DIALECT_ANSI,
     DIALECT_OSSIE_SQL,
     OSSIE_VERSION,
-    SQL_DIALECT_READERS,
     ConversionError,
     classify_metric_expression,
     cube_file,
@@ -79,7 +80,8 @@ from ._common import (
     view_file,
 )
 from .converter_issues import IssueLog, IssueType
-from .expressions import (aggregate_spans, parse as parse_expression, qualify_bare_columns,
+from .expressions import (UnattributableSQL, aggregate_spans, native_tokens,
+                          parse as parse_expression, qualify_bare_columns,
                           replace_bare_identifiers, unqualified_column_names,
                           unsplittable_aggregate_datasets)
 
@@ -1206,22 +1208,22 @@ def _pinned_cube(stash, metric_name, known_cubes, issues):
     return None
 
 
+@functools.lru_cache(maxsize=256)
 def _native_columns(text, source_dialect):
     """Columns requiring native parsing before portable reference rewriting."""
-    if source_dialect not in ("BIGQUERY", "DATABRICKS"):
-        return []
+    if source_dialect not in BACKTICK_DIALECTS:
+        return ()
     tree = parse_expression(text, source_dialect)
-    return list(tree.find_all(sqlglot.exp.Column)) if tree is not None else []
+    return tuple(tree.find_all(sqlglot.exp.Column)) if tree is not None else ()
 
 
 def _mask_native_literals(text, source_dialect, substitutions):
     """Hide native literals and comments from portable identifier rewrites."""
-    if source_dialect not in ("BIGQUERY", "DATABRICKS"):
+    if source_dialect not in BACKTICK_DIALECTS:
         return text
     try:
-        tokens = sqlglot.Dialect.get_or_raise(
-            SQL_DIALECT_READERS[source_dialect]).tokenize(text)
-    except sqlglot.errors.SqlglotError:
+        tokens = native_tokens(text, source_dialect)
+    except UnattributableSQL:
         # Export retains its existing opaque fallback for unparseable SQL.
         return text
     spans, cursor = [], 0
@@ -1273,6 +1275,7 @@ class _MetricReferences:
         self._model_name = model_name
         self._field_owners = field_owners  # match key -> {cubes declaring the field}
         self._index = {}     # match key -> canonical key
+        self._native_masks = {}  # (text, target, dialect) -> native reference masks
         self._details = {}   # canonical key -> {measure, stash_cube, expr, cube}
         for metric in (model.get("metrics") or []):
             raw = metric.get("name")
@@ -1354,10 +1357,12 @@ class _MetricReferences:
         Native column nodes provide the exact spans and decoded identifier names
         needed to resolve those references, including columns absent from fields.
         """
+        key = (text, target, source_dialect)
+        if key in self._native_masks:
+            return self._native_masks[key]
         out = {}
         columns = _native_columns(text, source_dialect)
-        tokens = (sqlglot.Dialect.get_or_raise(SQL_DIALECT_READERS[source_dialect])
-                  .tokenize(text)) if columns else []
+        tokens = native_tokens(text, source_dialect) if columns else []
         for column in columns:
             parts = column.parts
             if len(parts) < 2:
@@ -1417,6 +1422,7 @@ class _MetricReferences:
                 elif own and canonical is not None:
                     replacement = "{CUBE}." + canonical
             out[raw] = (f"__ossie_nref_{len(out)}__", replacement)
+        self._native_masks[key] = out
         return out
 
     def dropped_references(self, expr, source_dialect=None):
@@ -1509,8 +1515,7 @@ class _MetricReferences:
             if native_pattern:
                 # Token starts exclude text inside native (including raw/triple)
                 # literals, even if it contains an otherwise identical reference.
-                starts = {t.start for t in sqlglot.Dialect.get_or_raise(
-                    SQL_DIALECT_READERS[source_dialect]).tokenize(fragment)}
+                starts = {t.start for t in native_tokens(fragment, source_dialect)}
                 def replace(match):
                     if match.start() not in starts:
                         return match.group(0)
@@ -1713,13 +1718,9 @@ def _measure_from_expression(expr, target, mname, stash, plan, refs, *,
     """
     measure = {"name": mname}
     key = list(plan[target].primary_key) if target in plan else []
-    # This is the picked expression's label, not the export's preferred warehouse.
-    # Portable labels (e.g. OSSIE_SQL_2026) use the default VARCHAR key shape.
-    # A different explicit operand stays count_distinct and round-trips verbatim;
-    # only the matching canonical key can safely collapse to Cube's bare count.
-    warehouse_dialect = (expression_dialect
-                         if expression_dialect in SQL_DIALECT_READERS else None)
-    pk_operand = (primary_key_operand(target, key, source_dialect=warehouse_dialect)
+    # The picked expression's label, not the export's preferred warehouse, decides the
+    # key casts: only the matching canonical key collapses to Cube's bare count.
+    pk_operand = (primary_key_operand(target, key, source_dialect=expression_dialect)
                   if key else None)
     mtype, operand, filters = classify_metric_expression(expr, pk_operand)
     declared = stash.get("type")

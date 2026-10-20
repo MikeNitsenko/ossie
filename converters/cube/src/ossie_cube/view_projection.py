@@ -78,6 +78,7 @@ from .cube_to_ossie import (
     _no_cubes_message,
     _primary_key_of,
     _report_fanout,
+    measure_dialect,
     parked_of,
 )
 from .expressions import (
@@ -620,9 +621,8 @@ def _reduced_measure(inliner, cubes, measure, cname, mname):
     out = _labels_of(measure)
     if snake(measure.get("type") or "") == "count" and measure.get("sql") is None:
         out["type"] = "count_distinct"
-        count_dialect = (parked_of(measure.get("meta")).get("dialect")
-                         or inliner.source_dialect)
-        out["sql"] = _primary_key_sql(inliner, cubes, cname, count_dialect)
+        out["sql"] = _primary_key_sql(
+            inliner, cubes, cname, measure_dialect(measure, inliner.source_dialect))
     elif measure.get("sql") is not None:
         out["sql"] = inliner.rewrite(measure["sql"], cname, scope, measures=references)
     filters = [f for f in measure.get("filters") or []

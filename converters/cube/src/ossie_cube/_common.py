@@ -65,6 +65,9 @@ SQL_DIALECT_READERS = {
     "BIGQUERY": "bigquery",
 }
 WAREHOUSE_DIALECTS = frozenset(SQL_DIALECT_READERS)
+# Warehouses that quote identifiers with backticks (`"..."` is a string there) and
+# name their text type STRING.
+BACKTICK_DIALECTS = frozenset({"BIGQUERY", "DATABRICKS"})
 
 # Bump when the shape of a stashed `data` blob changes.
 STASH_VERSION = 1
@@ -1235,7 +1238,7 @@ def primary_key_operand(cube_name, primary_keys, render=None, source_dialect=Non
             return f"{cube_name}.{pk}"
     if len(primary_keys) == 1:
         return render(primary_keys[0])
-    cast_type = "STRING" if source_dialect in ("BIGQUERY", "DATABRICKS") else "VARCHAR"
+    cast_type = "STRING" if source_dialect in BACKTICK_DIALECTS else "VARCHAR"
     parts = ", ".join(f"CAST({render(pk)} AS {cast_type})" for pk in primary_keys)
     return f"CONCAT({parts})"
 
